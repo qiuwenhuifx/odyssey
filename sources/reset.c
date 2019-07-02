@@ -32,16 +32,13 @@ od_reset(od_server_t *server)
 	}
 
 	/* support route rollback off */
-	if (! route->config->pool_rollback) {
+	if (! route->rule->pool_rollback) {
 		if (server->is_transaction) {
 			od_log(&instance->logger, "reset", server->client, server,
 			       "in active transaction, closing");
 			goto drop;
 		}
 	}
-
-	if (! od_packet_is_complete(&server->packet_reader))
-		goto drop;
 
 	/* Server is not synchronized.
 	 *
@@ -68,6 +65,10 @@ od_reset(od_server_t *server)
 	int rc = 0;
 	for (;;)
 	{
+		/* check that msg syncronization is not broken*/
+		if (server->relay.packet > 0)
+			goto error;
+
 		while (! od_server_synchronized(server)) {
 			od_debug(&instance->logger, "reset", server->client, server,
 			         "not synchronized, wait for %d msec (#%d)",
@@ -83,7 +84,7 @@ od_reset(od_server_t *server)
 				goto error;
 
 			/* support route cancel off */
-			if (! route->config->pool_cancel) {
+			if (! route->rule->pool_cancel) {
 				od_log(&instance->logger, "reset", server->client, server,
 				       "not synchronized, closing");
 				goto drop;
@@ -99,7 +100,7 @@ od_reset(od_server_t *server)
 			       wait_try_cancel);
 			wait_try_cancel++;
 			rc = od_cancel(server->global,
-			               route->config->storage, &server->key,
+			               route->rule->storage, &server->key,
 			               &server->id);
 			if (rc == -1)
 				goto error;
@@ -113,15 +114,24 @@ od_reset(od_server_t *server)
 
 	/* send rollback in case server has an active
 	 * transaction running */
-	if (route->config->pool_rollback) {
+	if (route->rule->pool_rollback) {
 		if (server->is_transaction) {
 			char query_rlb[] = "ROLLBACK";
-			rc = od_backend_query(server, "reset rollback", query_rlb,
+			rc = od_backend_query(server, "reset-rollback", query_rlb,
 			                      sizeof(query_rlb));
 			if (rc == -1)
 				goto error;
 			assert(! server->is_transaction);
 		}
+	}
+
+	/* send DISCARD ALL */
+	if (route->rule->pool_discard) {
+		char query_discard[] = "DISCARD ALL";
+		rc = od_backend_query(server, "reset-discard", query_discard,
+		                      sizeof(query_discard));
+		if (rc == -1)
+			goto error;
 	}
 
 	/* ready */

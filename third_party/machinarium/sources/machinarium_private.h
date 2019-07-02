@@ -18,6 +18,7 @@
 #include <assert.h>
 #include <signal.h>
 #include <unistd.h>
+#include <errno.h>
 #include <pthread.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -27,6 +28,7 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <sys/uio.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/signalfd.h>
@@ -42,6 +44,7 @@
 #include "build.h"
 #include "macro.h"
 #include "util.h"
+#include "sleep_lock.h"
 #include "list.h"
 #include "buf.h"
 
@@ -64,6 +67,7 @@
 #include "thread.h"
 #include "signal_mgr.h"
 
+#include "cond.h"
 #include "event.h"
 #include "event_mgr.h"
 
@@ -80,11 +84,10 @@
 #include "machine_mgr.h"
 #include "mm.h"
 
-#include "tls_api.h"
+#include "iov.h"
+#include "io.h"
 #include "tls.h"
 
-#include "io.h"
-#include "read.h"
-#include "write.h"
+#include "lrand48.h"
 
 #endif

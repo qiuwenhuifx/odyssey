@@ -23,7 +23,7 @@ void mm_channelfast_free(mm_channelfast_t *channel)
 	mm_list_foreach_safe(&channel->incoming, i, n) {
 		mm_msg_t *msg;
 		msg = mm_container_of(i, mm_msg_t, link);
-		mm_msg_unref(&machinarium.msg_cache, msg);
+		mm_msg_unref(&mm_self->msg_cache, msg);
 	}
 }
 
@@ -54,29 +54,28 @@ mm_msg_t*
 mm_channelfast_read(mm_channelfast_t *channel, uint32_t time_ms)
 {
 	mm_errno_set(0);
-	if (channel->incoming_count > 0)
-		goto fetch;
+	while (channel->incoming_count == 0)
+	{
+		mm_channelfast_rd_t reader;
+		reader.signaled = 0;
+		mm_list_init(&reader.link);
 
-	mm_channelfast_rd_t reader;
-	reader.signaled = 0;
-	mm_list_init(&reader.link);
+		mm_list_append(&channel->readers, &reader.link);
+		channel->readers_count++;
 
-	mm_list_append(&channel->readers, &reader.link);
-	channel->readers_count++;
-
-	mm_call(&reader.call, MM_CALL_CHANNEL, time_ms);
-	if (reader.call.status != 0) {
-		/* timedout or cancel */
-		if (! reader.signaled) {
-			assert(channel->readers_count > 0);
-			channel->readers_count--;
-			mm_list_unlink(&reader.link);
+		mm_call(&reader.call, MM_CALL_CHANNEL, time_ms);
+		if (reader.call.status != 0) {
+			/* timedout or cancel */
+			if (! reader.signaled) {
+				assert(channel->readers_count > 0);
+				channel->readers_count--;
+				mm_list_unlink(&reader.link);
+			}
+			return NULL;
 		}
-		return NULL;
+		assert(reader.signaled);
 	}
-	assert(reader.signaled);
 
-fetch:;
 	mm_list_t *first;
 	first = mm_list_pop(&channel->incoming);
 	channel->incoming_count--;

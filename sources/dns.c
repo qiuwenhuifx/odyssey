@@ -92,39 +92,3 @@ od_getsockname(machine_io_t *io, char *buf, int size, int add_addr, int add_port
 	}
 	return od_getsockaddrname((struct sockaddr*)&sa, buf, size, add_addr, add_port);
 }
-
-machine_msg_t*
-od_read_startup(machine_io_t *io, uint32_t time_ms)
-{
-	machine_msg_t *msg;
-	msg = machine_read(io, sizeof(uint32_t), time_ms);
-	if (msg == NULL)
-		return NULL;
-	uint32_t size;
-	size = kiwi_read_startup_size(machine_msg_get_data(msg), machine_msg_get_size(msg));
-	int rc;
-	rc = machine_read_to(io, msg, size, time_ms);
-	if (rc == -1) {
-		machine_msg_free(msg);
-		return NULL;
-	}
-	return msg;
-}
-
-machine_msg_t*
-od_read(machine_io_t *io, uint32_t time_ms)
-{
-	machine_msg_t *msg;
-	msg = machine_read(io, sizeof(kiwi_header_t), time_ms);
-	if (msg == NULL)
-		return NULL;
-	uint32_t size;
-	size = kiwi_read_size(machine_msg_get_data(msg), machine_msg_get_size(msg));
-	int rc;
-	rc = machine_read_to(io, msg, size, time_ms);
-	if (rc == -1) {
-		machine_msg_free(msg);
-		return NULL;
-	}
-	return msg;
-}

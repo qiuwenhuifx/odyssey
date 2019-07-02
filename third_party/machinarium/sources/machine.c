@@ -14,7 +14,7 @@ static int
 mm_idle_cb(mm_idle_t *handle)
 {
 	(void)handle;
-	mm_scheduler_run(&mm_self->scheduler, &machinarium.coroutine_cache);
+	mm_scheduler_run(&mm_self->scheduler, &mm_self->coroutine_cache);
 	return mm_scheduler_online(&mm_self->scheduler);
 }
 
@@ -23,6 +23,8 @@ machine_free(mm_machine_t *machine)
 {
 	/* todo: check active timers and other allocated
 	 *       resources */
+	mm_msgcache_free(&machine->msg_cache);
+	mm_coroutine_cache_free(&machine->coroutine_cache);
 	mm_eventmgr_free(&machine->event_mgr, &machine->loop);
 	mm_signalmgr_free(&machine->signal_mgr, &machine->loop);
 	mm_loop_shutdown(&machine->loop);
@@ -35,9 +37,13 @@ machine_main(void *arg)
 	mm_machine_t *machine = arg;
 	mm_self = machine;
 
+	mm_thread_disable_cancel();
+
 	/* set thread name */
 	if (machine->name)
 		mm_thread_set_name(&machine->thread, machine->name);
+
+	mm_lrand48_seed();
 
 	/* create main coroutine */
 	int64_t id;
@@ -77,6 +83,16 @@ machine_create(char *name, machine_coroutine_t function, void *arg)
 		}
 	}
 	mm_list_init(&machine->link);
+
+	mm_msgcache_init(&machine->msg_cache);
+	mm_msgcache_set_gc_watermark(&machine->msg_cache,
+	                              machinarium.config.msg_cache_gc_size);
+
+	mm_coroutine_cache_init(&machine->coroutine_cache,
+	                        machinarium.config.stack_size * machinarium.config.page_size,
+	                        machinarium.config.page_size,
+	                        machinarium.config.coroutine_cache_size);
+
 	mm_scheduler_init(&machine->scheduler);
 	int rc;
 	rc = mm_loop_init(&machine->loop);
@@ -152,7 +168,7 @@ machine_coroutine_create(machine_coroutine_t function, void *arg)
 {
 	mm_errno_set(0);
 	mm_coroutine_t *coroutine;
-	coroutine = mm_coroutine_cache_pop(&machinarium.coroutine_cache);
+	coroutine = mm_coroutine_cache_pop(&mm_self->coroutine_cache);
 	if (coroutine == NULL) {
 		mm_errno_set(ENOMEM);
 		return -1;
@@ -201,34 +217,6 @@ machine_cancel(uint64_t coroutine_id)
 }
 
 MACHINE_API int
-machine_condition(uint32_t time_ms)
-{
-	mm_errno_set(0);
-	mm_call_t call;
-	mm_call(&call, MM_CALL_CONDITION, time_ms);
-	if (call.status != 0)
-		return -1;
-	return 0;
-}
-
-MACHINE_API int
-machine_signal(uint64_t coroutine_id)
-{
-	mm_errno_set(0);
-	mm_coroutine_t *coroutine;
-	coroutine = mm_scheduler_find(&mm_self->scheduler, coroutine_id);
-	if (coroutine == NULL) {
-		mm_errno_set(ENOENT);
-		return -1;
-	}
-	mm_call_t *call = coroutine->call_ptr;
-	if (call == NULL)
-		return -1;
-	mm_scheduler_wakeup(&mm_self->scheduler, coroutine);
-	return 0;
-}
-
-MACHINE_API int
 machine_cancelled(void)
 {
 	mm_coroutine_t *coroutine;
@@ -251,7 +239,31 @@ machine_errno(void)
 }
 
 MACHINE_API uint64_t
-machine_time(void)
+machine_time_ms(void)
 {
+	mm_clock_update(&mm_self->loop.clock);
+	return mm_self->loop.clock.time_ms;
+}
+
+MACHINE_API uint64_t
+machine_time_us(void)
+{
+	mm_clock_update(&mm_self->loop.clock);
 	return mm_self->loop.clock.time_us;
+}
+
+MACHINE_API void
+machine_stat(uint64_t *coroutine_count,
+             uint64_t *coroutine_cache_count,
+             uint64_t *msg_allocated,
+             uint64_t *msg_cache_count,
+             uint64_t *msg_cache_gc_count,
+             uint64_t *msg_cache_size)
+{
+	mm_coroutine_cache_stat(&mm_self->coroutine_cache,
+	                        coroutine_count,
+	                        coroutine_cache_count);
+
+	mm_msgcache_stat(&mm_self->msg_cache, msg_allocated, msg_cache_gc_count,
+	                 msg_cache_count, msg_cache_size);
 }

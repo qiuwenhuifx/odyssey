@@ -3,27 +3,24 @@ set(od_binary ${CMAKE_PROJECT_NAME})
 set(od_src
     daemon.c
     pid.c
-    id.c
     logger.c
+    rules.c
     config.c
     config_reader.c
-    io.c
-    server_pool.c
-    client_pool.c
-    route_pool.c
+    dns.c
     router.c
-    cron.c
     system.c
+    cron.c
     worker.c
     tls.c
     auth_query.c
     auth.c
     cancel.c
-    reset.c
-    deploy.c
-    backend.c
-    frontend.c
     console.c
+    deploy.c
+    reset.c
+    frontend.c
+    backend.c
     instance.c
     main.c
 )

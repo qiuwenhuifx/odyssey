@@ -3,18 +3,21 @@
 #include <odyssey_test.h>
 #include <unistd.h>
 
+#if 0
 static void
 coroutine(void *arg)
 {
 	(void)arg;
 	machine_sleep(100);
 }
+#endif
 
 void
 machinarium_test_stat(void)
 {
 	machinarium_init();
 
+#if 0
 	uint64_t count_machine = 0;
 	uint64_t count_coroutine = 0;
 	uint64_t count_coroutine_cache = 0;
@@ -79,6 +82,7 @@ machinarium_test_stat(void)
 		test(count_coroutine_cache == 0);
 		break;
 	}
+#endif
 
 	machinarium_free();
 }

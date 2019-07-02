@@ -240,7 +240,7 @@ od_logger_format(od_logger_t *logger, od_logger_level_t level,
 				break;
 			/* client id */
 			case 'i':
-				if (client) {
+				if (client && client->id.id_prefix != NULL) {
 					len = od_snprintf(dst_pos, dst_end - dst_pos, "%s%.*s",
 					                  client->id.id_prefix,
 					                  (signed)sizeof(client->id.id), client->id.id);
@@ -252,7 +252,7 @@ od_logger_format(od_logger_t *logger, od_logger_level_t level,
 				break;
 			/* server id */
 			case 's':
-				if (server) {
+				if (server && server->id.id_prefix != NULL) {
 					len = od_snprintf(dst_pos, dst_end - dst_pos, "%s%.*s",
 					                  server->id.id_prefix,
 					                  (signed)sizeof(server->id.id), server->id.id);
@@ -264,9 +264,8 @@ od_logger_format(od_logger_t *logger, od_logger_level_t level,
 				break;
 			/* user name */
 			case 'u':
-				if (client && client->startup.user) {
-					len = od_snprintf(dst_pos, dst_end - dst_pos,
-					                  kiwi_param_value(client->startup.user));
+				if (client && client->startup.user.value_len) {
+					len = od_snprintf(dst_pos, dst_end - dst_pos, client->startup.user.value);
 					dst_pos += len;
 					break;
 				}
@@ -275,9 +274,8 @@ od_logger_format(od_logger_t *logger, od_logger_level_t level,
 				break;
 			/* database name */
 			case 'd':
-				if (client && client->startup.database) {
-					len = od_snprintf(dst_pos, dst_end - dst_pos,
-					                  kiwi_param_value(client->startup.database));
+				if (client && client->startup.database.value_len) {
+					len = od_snprintf(dst_pos, dst_end - dst_pos, client->startup.database.value);
 					dst_pos += len;
 					break;
 				}
@@ -306,8 +304,8 @@ od_logger_format(od_logger_t *logger, od_logger_level_t level,
 				break;
 			/* client host */
 			case 'h':
-				if (client && client->io) {
-					od_getpeername(client->io, peer, sizeof(peer), 1, 0);
+				if (client && client->io.io) {
+					od_getpeername(client->io.io, peer, sizeof(peer), 1, 0);
 					len = od_snprintf(dst_pos, dst_end - dst_pos, "%s", peer);
 					dst_pos += len;
 					break;
@@ -317,8 +315,8 @@ od_logger_format(od_logger_t *logger, od_logger_level_t level,
 				break;
 			/* client port */
 			case 'r':
-				if (client && client->io) {
-					od_getpeername(client->io, peer, sizeof(peer), 0, 1);
+				if (client && client->io.io) {
+					od_getpeername(client->io.io, peer, sizeof(peer), 0, 1);
 					len = od_snprintf(dst_pos, dst_end - dst_pos, "%s", peer);
 					dst_pos += len;
 					break;
@@ -357,33 +355,39 @@ od_logger_write(od_logger_t *logger, od_logger_level_t level,
                 void *client, void *server,
                 char *fmt, va_list args)
 {
+	if (logger->fd == -1 && !logger->log_stdout && !logger->log_syslog)
+		return;
+
 	if (level == OD_DEBUG) {
 		int is_debug = logger->log_debug;
 		if (! is_debug) {
 			od_client_t *client_ref = client;
 			od_server_t *server_ref = server;
-			if (client_ref && client_ref->config) {
-				is_debug = client_ref->config->log_debug;
+			if (client_ref && client_ref->rule) {
+				is_debug = client_ref->rule->log_debug;
 			} else
 			if (server_ref && server_ref->route) {
 				od_route_t *route = server_ref->route;
-				is_debug = route->config->log_debug;
+				is_debug = route->rule->log_debug;
 			}
 		}
 		if (! is_debug)
 			return;
 	}
+
 	char output[1024];
 	int  len;
 	len = od_logger_format(logger, level, context, client, server,
 	                       fmt, args, output, sizeof(output));
+	int rc;
 	if (logger->fd != -1) {
-		(void)write(logger->fd, output, len);
+		rc = write(logger->fd, output, len);
 	}
 	if (logger->log_stdout) {
-		(void)write(STDOUT_FILENO, output, len);
+		rc = write(STDOUT_FILENO, output, len);
 	}
 	if (logger->log_syslog) {
 		syslog(od_log_syslog_level[level], "%.*s", len, output);
 	}
+	(void)rc;
 }

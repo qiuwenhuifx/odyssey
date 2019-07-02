@@ -25,35 +25,28 @@ od_auth_frontend_cleartext(od_client_t *client)
 
 	/* AuthenticationCleartextPassword */
 	machine_msg_t *msg;
-	msg = kiwi_be_write_authentication_clear_text();
+	msg = kiwi_be_write_authentication_clear_text(NULL);
 	if (msg == NULL)
 		return -1;
 	int rc;
-	rc = machine_write(client->io, msg);
+	rc = od_write(&client->io, msg);
 	if (rc == -1) {
 		od_error(&instance->logger, "auth", client, NULL,
 		         "write error: %s",
-		         machine_error(client->io));
-		return -1;
-	}
-	rc = machine_flush(client->io, UINT32_MAX);
-	if (rc == -1) {
-		od_error(&instance->logger, "auth", client, NULL,
-		         "write error: %s",
-		         machine_error(client->io));
+		         od_io_error(&client->io));
 		return -1;
 	}
 
 	/* wait for password response */
 	while (1) {
-		msg = od_read(client->io, UINT32_MAX);
+		msg = od_read(&client->io, UINT32_MAX);
 		if (msg == NULL) {
 			od_error(&instance->logger, "auth", client, NULL,
 			         "read error: %s",
-			         machine_error(client->io));
+			         od_io_error(&client->io));
 			return -1;
 		}
-		kiwi_fe_type_t type = *(char*)machine_msg_get_data(msg);
+		kiwi_fe_type_t type = *(char*)machine_msg_data(msg);
 		od_debug(&instance->logger, "auth", client, NULL, "%s",
 		         kiwi_fe_type_to_string(type));
 		if (type == KIWI_FE_PASSWORD_MESSAGE)
@@ -64,7 +57,10 @@ od_auth_frontend_cleartext(od_client_t *client)
 	/* read password message */
 	kiwi_password_t client_token;
 	kiwi_password_init(&client_token);
-	rc = kiwi_be_read_password(msg, &client_token);
+
+	rc = kiwi_be_read_password(machine_msg_data(msg),
+	                           machine_msg_size(msg),
+	                           &client_token);
 	if (rc == -1) {
 		od_error(&instance->logger, "auth", client, NULL,
 		         "password read error");
@@ -79,10 +75,10 @@ od_auth_frontend_cleartext(od_client_t *client)
 	kiwi_password_t client_password;
 	kiwi_password_init(&client_password);
 
-	if (client->config->auth_query) {
+	if (client->rule->auth_query) {
 		rc = od_auth_query(client->global,
-		                   client->config,
-		                   client->startup.user,
+		                   client->rule,
+		                   &client->startup.user,
 		                   &client_password);
 		if (rc == -1) {
 			od_error(&instance->logger, "auth", client, NULL,
@@ -95,8 +91,8 @@ od_auth_frontend_cleartext(od_client_t *client)
 			return -1;
 		}
 	} else {
-		client_password.password_len = client->config->password_len + 1;
-		client_password.password     = client->config->password;
+		client_password.password_len = client->rule->password_len + 1;
+		client_password.password     = client->rule->password;
 	}
 
 	/* authenticate */
@@ -104,13 +100,13 @@ od_auth_frontend_cleartext(od_client_t *client)
 	kiwi_password_free(&client_token);
 	machine_msg_free(msg);
 
-	if (client->config->auth_query)
+	if (client->rule->auth_query)
 		kiwi_password_free(&client_password);
 	if (! check) {
 		od_log(&instance->logger, "auth", client, NULL,
 		       "user '%s.%s' incorrect password",
-		       kiwi_param_value(client->startup.database),
-		       kiwi_param_value(client->startup.user));
+		       client->startup.database.value,
+		       client->startup.user.value);
 		od_frontend_error(client, KIWI_INVALID_PASSWORD,
 		                  "incorrect password");
 		return -1;
@@ -128,35 +124,28 @@ od_auth_frontend_md5(od_client_t *client)
 
 	/* AuthenticationMD5Password */
 	machine_msg_t *msg;
-	msg = kiwi_be_write_authentication_md5((char*)&salt);
+	msg = kiwi_be_write_authentication_md5(NULL, (char*)&salt);
 	if (msg == NULL)
 		return -1;
 	int rc;
-	rc = machine_write(client->io, msg);
+	rc = od_write(&client->io, msg);
 	if (rc == -1) {
 		od_error(&instance->logger, "auth", client, NULL,
 		         "write error: %s",
-		         machine_error(client->io));
-		return -1;
-	}
-	rc = machine_flush(client->io, UINT32_MAX);
-	if (rc == -1) {
-		od_error(&instance->logger, "auth", client, NULL,
-		         "write error: %s",
-		         machine_error(client->io));
+		         od_io_error(&client->io));
 		return -1;
 	}
 
 	/* wait for password response */
 	while (1) {
-		msg = od_read(client->io, UINT32_MAX);
+		msg = od_read(&client->io, UINT32_MAX);
 		if (msg == NULL) {
 			od_error(&instance->logger, "auth", client, NULL,
 			         "read error: %s",
-			         machine_error(client->io));
+			         od_io_error(&client->io));
 			return -1;
 		}
-		kiwi_fe_type_t type = *(char*)machine_msg_get_data(msg);
+		kiwi_fe_type_t type = *(char*)machine_msg_data(msg);
 		od_debug(&instance->logger, "auth", client, NULL, "%s",
 		         kiwi_fe_type_to_string(type));
 		if (type == KIWI_FE_PASSWORD_MESSAGE)
@@ -167,7 +156,9 @@ od_auth_frontend_md5(od_client_t *client)
 	/* read password message */
 	kiwi_password_t client_token;
 	kiwi_password_init(&client_token);
-	rc = kiwi_be_read_password(msg, &client_token);
+	rc = kiwi_be_read_password(machine_msg_data(msg),
+	                           machine_msg_size(msg),
+	                           &client_token);
 	if (rc == -1) {
 		od_error(&instance->logger, "auth", client, NULL,
 		         "password read error");
@@ -185,10 +176,10 @@ od_auth_frontend_md5(od_client_t *client)
 	kiwi_password_t query_password;
 	kiwi_password_init(&query_password);
 
-	if (client->config->auth_query) {
+	if (client->rule->auth_query) {
 		rc = od_auth_query(client->global,
-		                   client->config,
-		                   client->startup.user,
+		                   client->rule,
+		                   &client->startup.user,
 		                   &query_password);
 		if (rc == -1) {
 			od_error(&instance->logger, "auth", client, NULL,
@@ -202,14 +193,14 @@ od_auth_frontend_md5(od_client_t *client)
 		}
 		query_password.password_len--;
 	} else {
-		query_password.password_len = client->config->password_len;
-		query_password.password = client->config->password;
+		query_password.password_len = client->rule->password_len;
+		query_password.password = client->rule->password;
 	}
 
 	/* prepare password hash */
 	rc = kiwi_password_md5(&client_password,
-	                       kiwi_param_value(client->startup.user),
-	                       client->startup.user->value_len - 1,
+	                       client->startup.user.value,
+	                       client->startup.user.value_len - 1,
 	                       query_password.password,
 	                       query_password.password_len,
 	                       (char*)&salt);
@@ -218,7 +209,7 @@ od_auth_frontend_md5(od_client_t *client)
 		         "memory allocation error");
 		kiwi_password_free(&client_password);
 		kiwi_password_free(&client_token);
-		if (client->config->auth_query)
+		if (client->rule->auth_query)
 			kiwi_password_free(&query_password);
 		machine_msg_free(msg);
 		return -1;
@@ -230,14 +221,14 @@ od_auth_frontend_md5(od_client_t *client)
 	kiwi_password_free(&client_token);
 	machine_msg_free(msg);
 
-	if (client->config->auth_query)
+	if (client->rule->auth_query)
 		kiwi_password_free(&query_password);
 
 	if (! check) {
 		od_log(&instance->logger, "auth", client, NULL,
 		       "user '%s.%s' incorrect password",
-		       kiwi_param_value(client->startup.database),
-		       kiwi_param_value(client->startup.user));
+		       client->startup.database.value,
+		       client->startup.user.value);
 		od_frontend_error(client, KIWI_INVALID_PASSWORD,
 		                  "incorrect password");
 		return -1;
@@ -260,18 +251,18 @@ od_auth_frontend_cert(od_client_t *client)
 	/* compare client certificate common name */
 	od_route_t *route = client->route;
 	int rc;
-	if (route->config->auth_common_name_default) {
-		rc = machine_io_verify(client->io, route->config->user_name);
+	if (route->rule->auth_common_name_default) {
+		rc = machine_io_verify(client->io.io, route->rule->user_name);
 		if (! rc) {
 			return 0;
 		}
 	}
 
 	od_list_t *i;
-	od_list_foreach(&route->config->auth_common_names, i) {
-		od_config_auth_t *auth;
-		auth = od_container_of(i, od_config_auth_t, link);
-		rc = machine_io_verify(client->io, auth->common_name);
+	od_list_foreach(&route->rule->auth_common_names, i) {
+		od_rule_auth_t *auth;
+		auth = od_container_of(i, od_rule_auth_t, link);
+		rc = machine_io_verify(client->io.io, auth->common_name);
 		if (! rc) {
 			return 0;
 		}
@@ -290,8 +281,8 @@ od_auth_frontend_block(od_client_t *client)
 	od_instance_t *instance = client->global->instance;
 	od_log(&instance->logger, "auth", client, NULL,
 	       "user '%s.%s' is blocked",
-	       kiwi_param_value(client->startup.database),
-	       kiwi_param_value(client->startup.user));
+	       client->startup.database.value,
+	       client->startup.user.value);
 	od_frontend_error(client, KIWI_INVALID_AUTHORIZATION_SPECIFICATION,
 	                  "user blocked");
 	return 0;
@@ -303,26 +294,26 @@ int od_auth_frontend(od_client_t *client)
 
 	/* authentication mode */
 	int rc;
-	switch (client->config->auth_mode) {
-	case OD_AUTH_CLEAR_TEXT:
+	switch (client->rule->auth_mode) {
+	case OD_RULE_AUTH_CLEAR_TEXT:
 		rc = od_auth_frontend_cleartext(client);
 		if (rc == -1)
 			return -1;
 		break;
-	case OD_AUTH_MD5:
+	case OD_RULE_AUTH_MD5:
 		rc = od_auth_frontend_md5(client);
 		if (rc == -1)
 			return -1;
 		break;
-	case OD_AUTH_CERT:
+	case OD_RULE_AUTH_CERT:
 		rc = od_auth_frontend_cert(client);
 		if (rc == -1)
 			return -1;
 		break;
-	case OD_AUTH_BLOCK:
+	case OD_RULE_AUTH_BLOCK:
 		od_auth_frontend_block(client);
 		return -1;
-	case OD_AUTH_NONE:
+	case OD_RULE_AUTH_NONE:
 		break;
 	default:
 		assert(0);
@@ -331,21 +322,14 @@ int od_auth_frontend(od_client_t *client)
 
 	/* pass */
 	machine_msg_t *msg;
-	msg = kiwi_be_write_authentication_ok();
+	msg = kiwi_be_write_authentication_ok(NULL);
 	if (msg == NULL)
 		return -1;
-	rc = machine_write(client->io, msg);
+	rc = od_write(&client->io, msg);
 	if (rc == -1) {
 		od_error(&instance->logger, "auth", client, NULL,
 		         "write error: %s",
-		         machine_error(client->io));
-		return -1;
-	}
-	rc = machine_flush(client->io, UINT32_MAX);
-	if (rc == -1) {
-		od_error(&instance->logger, "auth", client, NULL,
-		         "write error: %s",
-		         machine_error(client->io));
+		         od_io_error(&client->io));
 		return -1;
 	}
 	return 0;
@@ -364,42 +348,35 @@ od_auth_backend_cleartext(od_server_t *server)
 	/* use storage or user password */
 	char *password;
 	int   password_len;
-	if (route->config->storage_password) {
-		password = route->config->storage_password;
-		password_len = route->config->storage_password_len;
+	if (route->rule->storage_password) {
+		password = route->rule->storage_password;
+		password_len = route->rule->storage_password_len;
 	} else
-	if (route->config->password) {
-		password = route->config->password;
-		password_len = route->config->password_len;
+	if (route->rule->password) {
+		password = route->rule->password;
+		password_len = route->rule->password_len;
 	} else {
 		od_error(&instance->logger, "auth", NULL, server,
 		         "password required for route '%s.%s'",
-		         route->config->db_name,
-		         route->config->user_name);
+		         route->rule->db_name,
+		         route->rule->user_name);
 		return -1;
 	}
 
 	/* PasswordMessage */
 	machine_msg_t *msg;
-	msg = kiwi_fe_write_password(password, password_len + 1);
+	msg = kiwi_fe_write_password(NULL, password, password_len + 1);
 	if (msg == NULL) {
 		od_error(&instance->logger, "auth", NULL, server,
 		         "memory allocation error");
 		return -1;
 	}
 	int rc;
-	rc = machine_write(server->io, msg);
+	rc = od_write(&server->io, msg);
 	if (rc == -1) {
 		od_error(&instance->logger, "auth", NULL, server,
 		         "write error: %s",
-		         machine_error(server->io));
-		return -1;
-	}
-	rc = machine_flush(server->io, UINT32_MAX);
-	if (rc == -1) {
-		od_error(&instance->logger, "auth", NULL, server,
-		         "write error: %s",
-		         machine_error(server->io));
+		         od_io_error(&server->io));
 		return -1;
 	}
 	return 0;
@@ -418,29 +395,29 @@ od_auth_backend_md5(od_server_t *server, char salt[4])
 	/* use storage user or route user */
 	char *user;
 	int   user_len;
-	if (route->config->storage_user) {
-		user = route->config->storage_user;
-		user_len = route->config->storage_user_len;
+	if (route->rule->storage_user) {
+		user = route->rule->storage_user;
+		user_len = route->rule->storage_user_len;
 	} else {
-		user = route->config->user_name;
-		user_len = route->config->user_name_len;
+		user = route->rule->user_name;
+		user_len = route->rule->user_name_len;
 	}
 
 	/* use storage or user password */
 	char *password;
 	int   password_len;
-	if (route->config->storage_password) {
-		password = route->config->storage_password;
-		password_len = route->config->storage_password_len;
+	if (route->rule->storage_password) {
+		password = route->rule->storage_password;
+		password_len = route->rule->storage_password_len;
 	} else
-	if (route->config->password) {
-		password = route->config->password;
-		password_len = route->config->password_len;
+	if (route->rule->password) {
+		password = route->rule->password;
+		password_len = route->rule->password_len;
 	} else {
 		od_error(&instance->logger, "auth", NULL, server,
 		         "password required for route '%s.%s'",
-		         route->config->db_name,
-		         route->config->user_name);
+		         route->rule->db_name,
+		         route->rule->user_name);
 		return -1;
 	}
 
@@ -460,7 +437,8 @@ od_auth_backend_md5(od_server_t *server, char salt[4])
 
 	/* PasswordMessage */
 	machine_msg_t *msg;
-	msg = kiwi_fe_write_password(client_password.password,
+	msg = kiwi_fe_write_password(NULL,
+	                             client_password.password,
 	                             client_password.password_len);
 	kiwi_password_free(&client_password);
 	if (msg == NULL) {
@@ -468,18 +446,11 @@ od_auth_backend_md5(od_server_t *server, char salt[4])
 		         "memory allocation error");
 		return -1;
 	}
-	rc = machine_write(server->io, msg);
+	rc = od_write(&server->io, msg);
 	if (rc == -1) {
 		od_error(&instance->logger, "auth", NULL, server,
 		         "write error: %s",
-		         machine_error(server->io));
-		return -1;
-	}
-	rc = machine_flush(server->io, UINT32_MAX);
-	if (rc == -1) {
-		od_error(&instance->logger, "auth", NULL, server,
-		         "write error: %s",
-		         machine_error(server->io));
+		         od_io_error(&server->io));
 		return -1;
 	}
 	return 0;
@@ -489,12 +460,14 @@ int
 od_auth_backend(od_server_t *server, machine_msg_t *msg)
 {
 	od_instance_t *instance = server->global->instance;
-	assert(*(char*)machine_msg_get_data(msg) == KIWI_BE_AUTHENTICATION);
+	assert(*(char*)machine_msg_data(msg) == KIWI_BE_AUTHENTICATION);
 
 	uint32_t auth_type;
 	char salt[4];
 	int rc;
-	rc = kiwi_fe_read_auth(msg, &auth_type, salt);
+	rc = kiwi_fe_read_auth(machine_msg_data(msg),
+	                       machine_msg_size(msg),
+	                       &auth_type, salt);
 	if (rc == -1) {
 		od_error(&instance->logger, "auth", NULL, server,
 		         "failed to parse authentication message");
@@ -528,21 +501,23 @@ od_auth_backend(od_server_t *server, machine_msg_t *msg)
 	/* wait for authentication response */
 	while (1)
 	{
-		msg = od_read(server->io, UINT32_MAX);
-		if (rc == -1) {
+		msg = od_read(&server->io, UINT32_MAX);
+		if (msg == NULL) {
 			od_error(&instance->logger, "auth", NULL, server,
 			         "read error: %s",
-			         machine_error(server->io));
+			         od_io_error(&server->io));
 			return -1;
 		}
-		kiwi_be_type_t type = *(char*)machine_msg_get_data(msg);
+		kiwi_be_type_t type = *(char*)machine_msg_data(msg);
 		od_debug(&instance->logger, "auth", NULL, server, "%s",
 		         kiwi_be_type_to_string(type));
 
 		int rc;
 		switch (type) {
 		case KIWI_BE_AUTHENTICATION:
-			rc = kiwi_fe_read_auth(msg, &auth_type, salt);
+			rc = kiwi_fe_read_auth(machine_msg_data(msg),
+			                       machine_msg_size(msg),
+			                       &auth_type, salt);
 			machine_msg_free(msg);
 			if (rc == -1) {
 				od_error(&instance->logger, "auth", NULL, server,
@@ -556,7 +531,8 @@ od_auth_backend(od_server_t *server, machine_msg_t *msg)
 			}
 			return 0;
 		case KIWI_BE_ERROR_RESPONSE:
-			od_backend_error(server, "auth", msg);
+			od_backend_error(server, "auth", machine_msg_data(msg),
+			                 machine_msg_size(msg));
 			machine_msg_free(msg);
 			return -1;
 		default:

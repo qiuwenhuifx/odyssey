@@ -30,6 +30,7 @@ enum
 	OD_LNO,
 	OD_LINCLUDE,
 	OD_LDAEMONIZE,
+	OD_LPRIORITY,
 	OD_LLOG_TO_STDOUT,
 	OD_LLOG_DEBUG,
 	OD_LLOG_CONFIG,
@@ -56,6 +57,7 @@ enum
 	OD_LRESOLVERS,
 	OD_LPIPELINE,
 	OD_LPACKET_READ_SIZE,
+	OD_LPACKET_WRITE_QUEUE,
 	OD_LCACHE,
 	OD_LCACHE_CHUNK,
 	OD_LCACHE_MSG_GC_SIZE,
@@ -78,6 +80,7 @@ enum
 	OD_LPOOL_SIZE,
 	OD_LPOOL_TIMEOUT,
 	OD_LPOOL_TTL,
+	OD_LPOOL_DISCARD,
 	OD_LPOOL_CANCEL,
 	OD_LPOOL_ROLLBACK,
 	OD_LSTORAGE_DB,
@@ -94,6 +97,7 @@ typedef struct
 {
 	od_parser_t  parser;
 	od_config_t *config;
+	od_rules_t  *rules;
 	od_error_t  *error;
 	char        *config_file;
 	char        *data;
@@ -108,6 +112,7 @@ od_config_keywords[] =
 	od_keyword("no",                   OD_LNO),
 	od_keyword("include",              OD_LINCLUDE),
 	od_keyword("daemonize",            OD_LDAEMONIZE),
+	od_keyword("priority",             OD_LPRIORITY),
 	od_keyword("pid_file",             OD_LPID_FILE),
 	od_keyword("unix_socket_dir",      OD_LUNIX_SOCKET_DIR),
 	od_keyword("unix_socket_mode",     OD_LUNIX_SOCKET_MODE),
@@ -135,6 +140,7 @@ od_config_keywords[] =
 	od_keyword("resolvers",            OD_LRESOLVERS),
 	od_keyword("pipeline",             OD_LPIPELINE),
 	od_keyword("packet_read_size",     OD_LPACKET_READ_SIZE),
+	od_keyword("packet_write_queue",   OD_LPACKET_WRITE_QUEUE),
 	od_keyword("cache",                OD_LCACHE),
 	od_keyword("cache_chunk",          OD_LCACHE_CHUNK),
 	od_keyword("cache_msg_gc_size",    OD_LCACHE_MSG_GC_SIZE),
@@ -159,6 +165,7 @@ od_config_keywords[] =
 	od_keyword("pool_size",            OD_LPOOL_SIZE),
 	od_keyword("pool_timeout",         OD_LPOOL_TIMEOUT),
 	od_keyword("pool_ttl",             OD_LPOOL_TTL),
+	od_keyword("pool_discard",         OD_LPOOL_DISCARD),
 	od_keyword("pool_cancel",          OD_LPOOL_CANCEL),
 	od_keyword("pool_rollback",        OD_LPOOL_ROLLBACK),
 	od_keyword("storage_db",           OD_LSTORAGE_DB),
@@ -272,7 +279,7 @@ od_config_reader_symbol(od_config_reader_t *reader, char symbol)
 	rc = od_parser_next(&reader->parser, &token);
 	if (rc != OD_PARSER_SYMBOL)
 		goto error;
-	if (token.value.num != (uint64_t)symbol)
+	if (token.value.num != (int64_t)symbol)
 		goto error;
 	return true;
 error:
@@ -445,8 +452,8 @@ od_config_reader_listen(od_config_reader_t *reader)
 static int
 od_config_reader_storage(od_config_reader_t *reader)
 {
-	od_config_storage_t *storage;
-	storage = od_config_storage_add(reader->config);
+	od_rule_storage_t *storage;
+	storage = od_rules_storage_add(reader->rules);
 	if (storage == NULL)
 		return -1;
 	/* name */
@@ -555,15 +562,15 @@ od_config_reader_route(od_config_reader_t *reader, char *db_name, int db_name_le
 	user_name_len = strlen(user_name);
 
 	/* ensure route does not exists and add new route */
-	od_config_route_t *route;
-	route = od_config_route_match(reader->config, db_name, user_name);
+	od_rule_t *route;
+	route = od_rules_match(reader->rules, db_name, user_name);
 	if (route) {
 		od_errorf(reader->error, "route '%s.%s': is redefined",
 		          db_name, user_name);
 		free(user_name);
 		return -1;
 	}
-	route = od_config_route_add(reader->config);
+	route = od_rules_add(reader->rules);
 	if (route == NULL) {
 		free(user_name);
 		return -1;
@@ -625,8 +632,8 @@ od_config_reader_route(od_config_reader_t *reader, char *db_name, int db_name_le
 				route->auth_common_name_default = 1;
 				break;
 			}
-			od_config_auth_t *auth;
-			auth = od_config_auth_add(route);
+			od_rule_auth_t *auth;
+			auth = od_rules_auth_add(route);
 			if (auth == NULL)
 				return -1;
 			if (! od_config_reader_string(reader, &auth->common_name))
@@ -706,6 +713,11 @@ od_config_reader_route(od_config_reader_t *reader, char *db_name, int db_name_le
 			if (! od_config_reader_string(reader, &route->storage_password))
 				return -1;
 			route->storage_password_len = strlen(route->storage_password);
+			continue;
+		/* pool_discard */
+		case OD_LPOOL_DISCARD:
+			if (! od_config_reader_yes_no(reader, &route->pool_discard))
+				return -1;
 			continue;
 		/* pool_cancel */
 		case OD_LPOOL_CANCEL:
@@ -835,7 +847,7 @@ od_config_reader_parse(od_config_reader_t *reader)
 			char *config_file = NULL;
 			if (! od_config_reader_string(reader, &config_file))
 				return -1;
-			rc = od_config_reader_import(reader->config, reader->error, config_file);
+			rc = od_config_reader_import(reader->config, reader->rules, reader->error, config_file);
 			free(config_file);
 			if (rc == -1)
 				return -1;
@@ -844,6 +856,11 @@ od_config_reader_parse(od_config_reader_t *reader)
 		/* daemonize */
 		case OD_LDAEMONIZE:
 			if (! od_config_reader_yes_no(reader, &config->daemonize))
+				return -1;
+			continue;
+		/* priority */
+		case OD_LPRIORITY:
+			if (! od_config_reader_number(reader, &config->priority))
 				return -1;
 			continue;
 		/* pid_file */
@@ -932,11 +949,6 @@ od_config_reader_parse(od_config_reader_t *reader)
 			if (! od_config_reader_number(reader, &config->readahead))
 				return -1;
 			continue;
-		/* packet_read_size */
-		case OD_LPACKET_READ_SIZE:
-			if (! od_config_reader_number(reader, &config->packet_read_size))
-				return -1;
-			continue;
 		/* nodelay */
 		case OD_LNODELAY:
 			if (! od_config_reader_yes_no(reader, &config->nodelay))
@@ -963,6 +975,8 @@ od_config_reader_parse(od_config_reader_t *reader)
 		case OD_LPIPELINE:
 		case OD_LCACHE:
 		case OD_LCACHE_CHUNK:
+		case OD_LPACKET_WRITE_QUEUE:
+		case OD_LPACKET_READ_SIZE:
 		{
 			/* deprecated */
 			int unused;
@@ -1013,13 +1027,14 @@ od_config_reader_parse(od_config_reader_t *reader)
 }
 
 int
-od_config_reader_import(od_config_t *config, od_error_t *error,
+od_config_reader_import(od_config_t *config, od_rules_t *rules, od_error_t *error,
                         char *config_file)
 {
 	od_config_reader_t reader;
 	memset(&reader, 0, sizeof(reader));
 	reader.error   = error;
 	reader.config  = config;
+	reader.rules   = rules;
 	int rc;
 	rc = od_config_reader_open(&reader, config_file);
 	if (rc == -1)

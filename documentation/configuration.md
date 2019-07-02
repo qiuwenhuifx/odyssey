@@ -16,6 +16,14 @@ By default Odyssey does not run as a daemon. Set to 'yes' to enable.
 
 `daemonize no`
 
+#### priority *integer*
+
+Process priority.
+
+Set Odyssey parent process and threads priority.
+
+`priority -10`
+
 #### pid\_file *string*
 
 If pid\_file is specified, Odyssey will write its process id to
@@ -167,18 +175,6 @@ your server experience a big number of connecting clients.
 Set size of per-connection buffer used for io readahead operations.
 
 `readahead 8192`
-
-#### packet\_read\_size *integer*
-
-By default Odyssey will try to receive and send whole packet
-between client and server.
-
-It is possible to split a packet in chunks, this should potentially reduce
-overall memory and cpu usage.
-
-Set to zero, to disable.
-
-`packet_read_size 4096`
 
 #### cache\_coroutine *integer*
 
@@ -475,6 +471,15 @@ Close an server connection when it becomes idle for 'pool\_ttl' seconds.
 Set to zero to disable.
 
 `pool\_ttl 60`
+
+#### pool\_discard *yes|no*
+
+Server pool parameters discard.
+
+Execute `DISCARD ALL` and reset client parameters before using server
+from the pool.
+
+`pool_discard no`
 
 #### pool\_cancel *yes|no*
 

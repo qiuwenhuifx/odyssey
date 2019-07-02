@@ -13,17 +13,16 @@ typedef enum
 {
 	OD_SERVER_UNDEF,
 	OD_SERVER_IDLE,
-	OD_SERVER_ACTIVE,
-	OD_SERVER_EXPIRE
+	OD_SERVER_ACTIVE
 } od_server_state_t;
 
 struct od_server
 {
 	od_server_state_t  state;
 	od_id_t            id;
-	machine_io_t      *io;
 	machine_tls_t     *tls;
-	od_packet_t        packet_reader;
+	od_io_t            io;
+	od_relay_t         relay;
 	int                is_allocated;
 	int                is_transaction;
 	int                is_copy;
@@ -34,7 +33,7 @@ struct od_server
 	int                idle_time;
 	kiwi_key_t         key;
 	kiwi_key_t         key_client;
-	od_id_t            last_client_id;
+	kiwi_vars_t        vars;
 	machine_msg_t     *error_connect;
 	void              *client;
 	void              *route;
@@ -49,7 +48,6 @@ od_server_init(od_server_t *server)
 	server->route          = NULL;
 	server->client         = NULL;
 	server->global         = NULL;
-	server->io             = NULL;
 	server->tls            = NULL;
 	server->idle_time      = 0;
 	server->is_allocated   = 0;
@@ -62,10 +60,11 @@ od_server_init(od_server_t *server)
 	od_stat_state_init(&server->stats_state);
 	kiwi_key_init(&server->key);
 	kiwi_key_init(&server->key_client);
-	od_packet_init(&server->packet_reader);
+	kiwi_vars_init(&server->vars);
+	od_io_init(&server->io);
+	od_relay_init(&server->relay, &server->io);
 	od_list_init(&server->link);
 	memset(&server->id, 0, sizeof(server->id));
-	memset(&server->last_client_id, 0, sizeof(server->last_client_id));
 }
 
 static inline od_server_t*
@@ -96,6 +95,12 @@ static inline void
 od_server_sync_reply(od_server_t *server)
 {
 	server->sync_reply++;;
+}
+
+static inline int
+od_server_in_deploy(od_server_t *server)
+{
+	return server->deploy_sync > 0;
 }
 
 static inline int

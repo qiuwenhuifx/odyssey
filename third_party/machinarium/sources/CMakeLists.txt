@@ -2,6 +2,8 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra")
 
 set(machine_library machinarium)
 set(machine_src thread.c
+                pg_rand48.c
+                lrand48.c
                 loop.c
                 clock.c
                 socket.c
@@ -24,14 +26,14 @@ set(machine_src thread.c
                 channel_api.c
                 task_mgr.c
                 tls.c
-                tls_api.c
                 io.c
+                iov.c
                 close.c
                 connect.c
                 bind.c
                 eventfd.c
+                cond.c
                 read.c
-                read_poll.c
                 write.c
                 accept.c
                 dns.c)

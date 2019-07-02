@@ -33,7 +33,9 @@ int mm_loop_shutdown(mm_loop_t *loop)
 int mm_loop_step(mm_loop_t *loop)
 {
 	/* update clock time */
-	mm_clock_update(&loop->clock);
+	mm_clock_reset(&loop->clock);
+	if (loop->clock.active)
+		mm_clock_update(&loop->clock);
 
 	/* run idle callback */
 	int rc;
@@ -45,10 +47,15 @@ int mm_loop_step(mm_loop_t *loop)
 
 	/* get minimal timer timeout */
 	int timeout = UINT32_MAX;
-	mm_timer_t *min;
-	min = mm_clock_timer_min(&loop->clock);
-	if (min)
-		timeout = min->interval;
+	mm_timer_t *next;
+	next = mm_clock_timer_min(&loop->clock);
+	if (next) {
+		int64_t diff = next->timeout - loop->clock.time_ms;
+		if (diff <= 0)
+			timeout = 0;
+		else
+			timeout = diff;
+	}
 
 	/* run timers */
 	mm_clock_step(&loop->clock);
@@ -58,10 +65,5 @@ int mm_loop_step(mm_loop_t *loop)
 	if (rc == -1)
 		return -1;
 
-	/* update clock time */
-	mm_clock_update(&loop->clock);
-
-	/* run timers */
-	mm_clock_step(&loop->clock);
 	return 0;
 }

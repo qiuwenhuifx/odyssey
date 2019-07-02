@@ -88,6 +88,7 @@ make
 
 * [include](documentation/configuration.md#include-string)
 * [daemonize](documentation/configuration.md#daemonize-yesno)
+* [priority](documentation/configuration.md#priority-integer)
 * [pid\_file](documentation/configuration.md#pid_file-string)
 * [unix\_socket\_dir](documentation/configuration.md#unix_socket_dir-string)
 * [unix\_socket\_mode](documentation/configuration.md#unix_socket_mode-string)
@@ -112,7 +113,6 @@ make
 * [workers](documentation/configuration.md#workers-integer)
 * [resolvers](documentation/configuration.md#resolvers-integer)
 * [readahead](documentation/configuration.md#readahead-integer)
-* [packet\_read\_size](documentation/configuration.md#packet_read_size-integer)
 * [cache\_coroutine](documentation/configuration.md#cache_coroutine-integer)
 * [nodelay](documentation/configuration.md#nodelay-yesno)
 * [keepalive](documentation/configuration.md#keepalive-integer)
@@ -172,6 +172,7 @@ make
 * [pool\_size](documentation/configuration.md#pool_size-integer)
 * [pool\_timeout](documentation/configuration.md#pool_timeout-integer)
 * [pool\_ttl](documentation/configuration.md#pool_ttl-integer)
+* [pool\_discard](documentation/configuration.md#pool_discard-yesno)
 * [pool\_cancel](documentation/configuration.md#pool_cancel-yesno)
 * [pool\_rollback](documentation/configuration.md#pool_rollback-yesno)
 * [client\_fwd\_error](documentation/configuration.md#client_fwd_error-yesno)

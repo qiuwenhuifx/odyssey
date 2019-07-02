@@ -11,37 +11,31 @@ typedef struct kiwi_be_startup kiwi_be_startup_t;
 
 struct kiwi_be_startup
 {
-	int            is_ssl_request;
-	int            is_cancel;
-	kiwi_key_t     key;
-	kiwi_params_t  params;
-	kiwi_param_t  *user;
-	kiwi_param_t  *database;
-	kiwi_param_t  *application_name;
+	int        is_ssl_request;
+	int        is_cancel;
+	kiwi_key_t key;
+	kiwi_var_t user;
+	kiwi_var_t database;
+	kiwi_var_t replication;
 };
 
 static inline void
 kiwi_be_startup_init(kiwi_be_startup_t *su)
 {
-	su->is_cancel        = 0;
-	su->is_ssl_request   = 0;
-	su->user             = NULL;
-	su->database         = NULL;
-	su->application_name = NULL;
-	kiwi_params_init(&su->params);
+	su->is_cancel      = 0;
+	su->is_ssl_request = 0;
 	kiwi_key_init(&su->key);
-}
-
-static inline void
-kiwi_be_startup_free(kiwi_be_startup_t *su)
-{
-	kiwi_params_free(&su->params);
+	kiwi_var_init(&su->user, NULL, 0);
+	kiwi_var_init(&su->database, NULL, 0);
+	kiwi_var_init(&su->replication, NULL, 0);
 }
 
 static inline int
-kiwi_be_read_options(kiwi_be_startup_t *su, char *pos, uint32_t pos_size)
+kiwi_be_read_options(kiwi_be_startup_t *su, char *pos, uint32_t pos_size,
+                     kiwi_vars_t *vars)
 {
-	for (;;) {
+	for (;;)
+	{
 		/* name */
 		uint32_t name_size;
 		char *name = pos;
@@ -59,44 +53,35 @@ kiwi_be_read_options(kiwi_be_startup_t *su, char *pos, uint32_t pos_size)
 		if (kiwi_unlikely(rc == -1))
 			return -1;
 		value_size = pos - value;
-		kiwi_param_t *param;
-		param = kiwi_param_allocate(name, name_size, value, value_size);
-		if (param == NULL)
-			return -1;
-		kiwi_params_add(&su->params, param);
-	}
 
-	/* set common params */
-	kiwi_param_t *param = su->params.list;
-	while (param)
-	{
-		if (param->name_len == 5 && !memcmp(param->data, "user", 5))
-			su->user = param;
+		/* set common params */
+		if (name_size == 5 && !memcmp(name, "user", 5))
+			kiwi_var_set(&su->user, KIWI_VAR_UNDEF, value, value_size);
 		else
-		if (param->name_len == 9 && !memcmp(param->data, "database", 9))
-			su->database = param;
+		if (name_size == 9 && !memcmp(name, "database", 9))
+			kiwi_var_set(&su->database, KIWI_VAR_UNDEF, value, value_size);
 		else
-		if (param->name_len == 17 && !memcmp(param->data, "application_name", 17))
-			su->application_name = param;
-		param = param->next;
+		if (name_size == 12 && !memcmp(name, "replication", 12))
+			kiwi_var_set(&su->replication, KIWI_VAR_UNDEF, value, value_size);
+		else
+			kiwi_vars_update(vars, name, name_size, value, value_size);
 	}
 
 	/* user is mandatory */
-	if (su->user == NULL)
+	if (su->user.value_len == 0)
 		return -1;
-	if (su->database == NULL)
-		su->database = su->user;
+
+	/* database = user, if not specified */
+	if (su->database.value_len == 0)
+		kiwi_var_set(&su->database, KIWI_VAR_UNDEF,
+		             su->user.value,
+		             su->user.value_len);
 	return 0;
 }
 
 KIWI_API static inline int
-kiwi_be_read_startup(machine_msg_t *msg, kiwi_be_startup_t *su)
+kiwi_be_read_startup(char *data, uint32_t size, kiwi_be_startup_t *su, kiwi_vars_t *vars)
 {
-	char *data;
-	data = machine_msg_get_data(msg);
-	uint32_t size;
-	size = machine_msg_get_size(msg);
-
 	uint32_t pos_size = size;
 	char *pos = data;
 	int rc;
@@ -112,7 +97,7 @@ kiwi_be_read_startup(machine_msg_t *msg, kiwi_be_startup_t *su)
 	/* StartupMessage */
 	case 196608:
 		su->is_cancel = 0;
-		rc = kiwi_be_read_options(su, pos, pos_size);
+		rc = kiwi_be_read_options(su, pos, pos_size, vars);
 		if (kiwi_unlikely(rc == -1))
 			return -1;
 		break;
@@ -137,13 +122,8 @@ kiwi_be_read_startup(machine_msg_t *msg, kiwi_be_startup_t *su)
 }
 
 KIWI_API static inline int
-kiwi_be_read_password(machine_msg_t *msg, kiwi_password_t *pw)
+kiwi_be_read_password(char *data, uint32_t size, kiwi_password_t *pw)
 {
-	char *data;
-	data = machine_msg_get_data(msg);
-	uint32_t size;
-	size = machine_msg_get_size(msg);
-
 	kiwi_header_t *header = (kiwi_header_t*)data;
 	uint32_t len;
 	int rc = kiwi_read(&len, &data, &size);
@@ -160,13 +140,8 @@ kiwi_be_read_password(machine_msg_t *msg, kiwi_password_t *pw)
 }
 
 KIWI_API static inline int
-kiwi_be_read_query(machine_msg_t *msg, char **query, uint32_t *query_len)
+kiwi_be_read_query(char *data, uint32_t size, char **query, uint32_t *query_len)
 {
-	char *data;
-	data = machine_msg_get_data(msg);
-	uint32_t size;
-	size = machine_msg_get_size(msg);
-
 	kiwi_header_t *header = (kiwi_header_t*)data;
 	uint32_t len;
 	int rc = kiwi_read(&len, &data, &size);
@@ -180,14 +155,9 @@ kiwi_be_read_query(machine_msg_t *msg, char **query, uint32_t *query_len)
 }
 
 KIWI_API static inline int
-kiwi_be_read_parse(machine_msg_t *msg, char **name, uint32_t *name_len,
+kiwi_be_read_parse(char *data, uint32_t size, char **name, uint32_t *name_len,
                    char **query, uint32_t *query_len)
 {
-	char *data;
-	data = machine_msg_get_data(msg);
-	uint32_t size;
-	size = machine_msg_get_size(msg);
-
 	kiwi_header_t *header = (kiwi_header_t*)data;
 	uint32_t len;
 	int rc = kiwi_read(&len, &data, &size);

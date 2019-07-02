@@ -26,10 +26,10 @@ od_tls_frontend(od_config_listen_t *config)
 	tls = machine_tls_create();
 	if (tls == NULL)
 		return NULL;
-	if (config->tls_mode == OD_TLS_ALLOW)
+	if (config->tls_mode == OD_CONFIG_TLS_ALLOW)
 		machine_tls_set_verify(tls, "none");
 	else
-	if (config->tls_mode == OD_TLS_REQUIRE)
+	if (config->tls_mode == OD_CONFIG_TLS_REQUIRE)
 		machine_tls_set_verify(tls, "peer");
 	else
 		machine_tls_set_verify(tls, "peer_strict");
@@ -68,24 +68,18 @@ od_tls_frontend_accept(od_client_t *client,
 		od_debug(logger, "tls", client, NULL, "ssl request");
 
 		int rc;
-		if (config->tls_mode == OD_TLS_DISABLE) {
+		if (config->tls_mode == OD_CONFIG_TLS_DISABLE) {
 			/* not supported 'N' */
 			machine_msg_t *msg;
 			msg = machine_msg_create(sizeof(uint8_t));
 			if (msg == NULL)
 				return -1;
-			uint8_t *type = machine_msg_get_data(msg);
+			uint8_t *type = machine_msg_data(msg);
 			*type = 'N';
-			rc = machine_write(client->io, msg);
+			rc = od_write(&client->io, msg);
 			if (rc == -1) {
 				od_error(logger, "tls", client, NULL, "write error: %s",
-				         machine_error(client->io));
-				return -1;
-			}
-			rc = machine_flush(client->io, UINT32_MAX);
-			if (rc == -1) {
-				od_error(logger, "tls", client, NULL, "write error: %s",
-				         machine_error(client->io));
+				         od_io_error(&client->io));
 				return -1;
 			}
 			od_debug(logger, "tls", client, NULL, "is disabled, ignoring");
@@ -97,32 +91,26 @@ od_tls_frontend_accept(od_client_t *client,
 		msg = machine_msg_create(sizeof(uint8_t));
 		if (msg == NULL)
 			return -1;
-		uint8_t *type = machine_msg_get_data(msg);
+		uint8_t *type = machine_msg_data(msg);
 		*type = 'S';
-		rc = machine_write(client->io, msg);
+		rc = od_write(&client->io, msg);
 		if (rc == -1) {
 			od_error(logger, "tls", client, NULL, "write error: %s",
-			         machine_error(client->io));
+			         od_io_error(&client->io));
 			return -1;
 		}
-		rc = machine_flush(client->io, UINT32_MAX);
-		if (rc == -1) {
-			od_error(logger, "tls", client, NULL, "write error: %s",
-			         machine_error(client->io));
-			return -1;
-		}
-		rc = machine_set_tls(client->io, tls);
+		rc = machine_set_tls(client->io.io, tls);
 		if (rc == -1) {
 			od_error(logger, "tls", client, NULL, "error: %s",
-			         machine_error(client->io));
+			         od_io_error(&client->io));
 			return -1;
 		}
 		od_debug(logger, "tls", client, NULL, "ok");
 		return 0;
 	}
 	switch (config->tls_mode) {
-	case OD_TLS_DISABLE:
-	case OD_TLS_ALLOW:
+	case OD_CONFIG_TLS_DISABLE:
+	case OD_CONFIG_TLS_ALLOW:
 		break;
 	default:
 		od_log(logger, "tls", client, NULL, "required, closing");
@@ -134,36 +122,36 @@ od_tls_frontend_accept(od_client_t *client,
 }
 
 machine_tls_t*
-od_tls_backend(od_config_storage_t *config)
+od_tls_backend(od_rule_storage_t *storage)
 {
 	int rc;
 	machine_tls_t *tls;
 	tls = machine_tls_create();
 	if (tls == NULL)
 		return NULL;
-	if (config->tls_mode == OD_TLS_ALLOW)
+	if (storage->tls_mode == OD_RULE_TLS_ALLOW)
 		machine_tls_set_verify(tls, "none");
 	else
-	if (config->tls_mode == OD_TLS_REQUIRE)
+	if (storage->tls_mode == OD_RULE_TLS_REQUIRE)
 		machine_tls_set_verify(tls, "peer");
 	else
 		machine_tls_set_verify(tls, "peer_strict");
-	if (config->tls_ca_file) {
-		rc = machine_tls_set_ca_file(tls, config->tls_ca_file);
+	if (storage->tls_ca_file) {
+		rc = machine_tls_set_ca_file(tls, storage->tls_ca_file);
 		if (rc == -1) {
 			machine_tls_free(tls);
 			return NULL;
 		}
 	}
-	if (config->tls_cert_file) {
-		rc = machine_tls_set_cert_file(tls, config->tls_cert_file);
+	if (storage->tls_cert_file) {
+		rc = machine_tls_set_cert_file(tls, storage->tls_cert_file);
 		if (rc == -1) {
 			machine_tls_free(tls);
 			return NULL;
 		}
 	}
-	if (config->tls_key_file) {
-		rc = machine_tls_set_key_file(tls, config->tls_key_file);
+	if (storage->tls_key_file) {
+		rc = machine_tls_set_key_file(tls, storage->tls_key_file);
 		if (rc == -1) {
 			machine_tls_free(tls);
 			return NULL;
@@ -175,54 +163,47 @@ od_tls_backend(od_config_storage_t *config)
 int
 od_tls_backend_connect(od_server_t *server,
                        od_logger_t *logger,
-                       od_config_storage_t *config)
+                       od_rule_storage_t *storage)
 {
 	od_debug(logger, "tls", NULL, server, "init");
 
 	/* SSL Request */
 	machine_msg_t *msg;
-	msg = kiwi_fe_write_ssl_request();
+	msg = kiwi_fe_write_ssl_request(NULL);
 	if (msg == NULL)
 		return -1;
 	int rc;
-	rc = machine_write(server->io, msg);
+	rc = od_write(&server->io, msg);
 	if (rc == -1) {
 		od_error(logger, "tls", NULL, server, "write error: %s",
-		         machine_error(server->io));
-		return -1;
-	}
-	rc = machine_flush(server->io, UINT32_MAX);
-	if (rc == -1) {
-		od_error(logger, "tls", NULL, server, "write error: %s",
-		         machine_error(server->io));
+		         od_io_error(&server->io));
 		return -1;
 	}
 
 	/* read server reply */
-	msg = machine_read(server->io, 1, UINT32_MAX);
+	char type;
+	rc = od_io_read(&server->io, &type, 1, UINT32_MAX);
 	if (rc == -1) {
 		od_error(logger, "tls", NULL, server, "read error: %s",
-		         machine_error(server->io));
+		         od_io_error(&server->io));
 		return -1;
 	}
-	char type = *(char*)machine_msg_get_data(msg);
-	machine_msg_free(msg);
 
 	switch (type) {
 	case 'S':
 		/* supported */
 		od_debug(logger, "tls", NULL, server, "supported");
-		rc = machine_set_tls(server->io, server->tls);
+		rc = machine_set_tls(server->io.io, server->tls);
 		if (rc == -1) {
 			od_error(logger, "tls", NULL, server, "error: %s",
-			         machine_error(server->io));
+			         od_io_error(&server->io));
 			return -1;
 		}
 		od_debug(logger, "tls", NULL, server, "ok");
 		break;
 	case 'N':
 		/* not supported */
-		if (config->tls_mode == OD_TLS_ALLOW) {
+		if (storage->tls_mode == OD_RULE_TLS_ALLOW) {
 			od_debug(logger, "tls", NULL, server,
 			         "not supported, continue (allow)");
 		} else {

@@ -23,12 +23,14 @@ void
 od_backend_close(od_server_t *server)
 {
 	assert(server->route == NULL);
-	assert(server->io == NULL);
+	assert(server->io.io == NULL);
 	assert(server->tls == NULL);
 	server->is_transaction = 0;
 	server->idle_time = 0;
 	kiwi_key_init(&server->key);
 	kiwi_key_init(&server->key_client);
+	od_relay_free(&server->relay);
+	od_io_free(&server->io);
 	od_server_free(server);
 }
 
@@ -36,27 +38,19 @@ static inline int
 od_backend_terminate(od_server_t *server)
 {
 	machine_msg_t *msg;
-	msg = kiwi_fe_write_terminate();
+	msg = kiwi_fe_write_terminate(NULL);
 	if (msg == NULL)
 		return -1;
-	int rc;
-	rc = machine_write(server->io, msg);
-	if (rc == -1)
-		return -1;
-	rc = machine_flush(server->io, UINT32_MAX);
-	return rc;
+	return od_write(&server->io, msg);
 }
 
 void
 od_backend_close_connection(od_server_t *server)
 {
-	if (server->io) {
-		if (machine_connected(server->io))
-			od_backend_terminate(server);
-		machine_close(server->io);
-		machine_io_free(server->io);
-		server->io = NULL;
-	}
+	if (machine_connected(server->io.io))
+		od_backend_terminate(server);
+
+	od_io_close(&server->io);
 
 	if (server->error_connect) {
 		machine_msg_free(server->error_connect);
@@ -71,12 +65,12 @@ od_backend_close_connection(od_server_t *server)
 
 void
 od_backend_error(od_server_t *server, char *context,
-                 machine_msg_t *msg)
+                 char *data, uint32_t size)
 {
 	od_instance_t *instance = server->global->instance;
 	kiwi_fe_error_t error;
 	int rc;
-	rc = kiwi_fe_read_error(msg, &error);
+	rc = kiwi_fe_read_error(data, size, &error);
 	if (rc == -1) {
 		od_error(&instance->logger, context, server->client, server,
 		         "failed to parse error message from server");
@@ -98,11 +92,11 @@ od_backend_error(od_server_t *server, char *context,
 }
 
 int
-od_backend_ready(od_server_t *server, machine_msg_t *msg)
+od_backend_ready(od_server_t *server, char *data, uint32_t size)
 {
 	int status;
 	int rc;
-	rc = kiwi_fe_read_ready(msg, &status);
+	rc = kiwi_fe_read_ready(data, size, &status);
 	if (rc == -1)
 		return -1;
 	if (status == 'I') {
@@ -121,33 +115,38 @@ od_backend_ready(od_server_t *server, machine_msg_t *msg)
 }
 
 static inline int
-od_backend_startup(od_server_t *server, kiwi_params_t *params)
+od_backend_startup(od_server_t *server, kiwi_params_t *route_params)
 {
 	od_instance_t *instance = server->global->instance;
 	od_route_t *route = server->route;
-
 	kiwi_fe_arg_t argv[] = {
-		{ "user", 5 },     { route->id.user, route->id.user_len },
-		{ "database", 9 }, { route->id.database, route->id.database_len }
+		{ "user", 5 },        { route->id.user, route->id.user_len },
+		{ "database", 9 },    { route->id.database, route->id.database_len },
+		{ "replication", 12}, { NULL, 0 }
 	};
+	int argc = 4;
+	if (route->rule->storage->storage_type == OD_RULE_STORAGE_REPLICATION ||
+	    route->id.physical_rep) {
+		argc = 6;
+		argv[5].name = "on";
+		argv[5].len  = 3;
+	} else
+	if (route->rule->storage->storage_type == OD_RULE_STORAGE_REPLICATION_LOGICAL) {
+		argc = 6;
+		argv[5].name = "database";
+		argv[5].len  = 9;
+	}
 
 	machine_msg_t *msg;
-	msg = kiwi_fe_write_startup_message(4, argv);
+	msg = kiwi_fe_write_startup_message(NULL, argc, argv);
 	if (msg == NULL)
 		return -1;
 	int rc;
-	rc = machine_write(server->io, msg);
+	rc = od_write(&server->io, msg);
 	if (rc == -1) {
 		od_error(&instance->logger, "startup", NULL, server,
 		         "write error: %s",
-		         machine_error(server->io));
-		return -1;
-	}
-	rc = machine_flush(server->io, UINT32_MAX);
-	if (rc == -1) {
-		od_error(&instance->logger, "startup", NULL, server,
-		         "write error: %s",
-		         machine_error(server->io));
+		         od_io_error(&server->io));
 		return -1;
 	}
 
@@ -156,20 +155,20 @@ od_backend_startup(od_server_t *server, kiwi_params_t *params)
 
 	while (1)
 	{
-		msg = od_read(server->io, UINT32_MAX);
+		msg = od_read(&server->io, UINT32_MAX);
 		if (msg == NULL) {
 			od_error(&instance->logger, "startup", NULL, server,
 			         "read error: %s",
-			         machine_error(server->io));
+			         od_io_error(&server->io));
 			return -1;
 		}
-		kiwi_be_type_t type = *(char*)machine_msg_get_data(msg);
+		kiwi_be_type_t type = *(char*)machine_msg_data(msg);
 		od_debug(&instance->logger, "startup", NULL, server, "%s",
 		         kiwi_be_type_to_string(type));
 
 		switch (type) {
 		case KIWI_BE_READY_FOR_QUERY:
-			od_backend_ready(server, msg);
+			od_backend_ready(server, machine_msg_data(msg), machine_msg_size(msg));
 			machine_msg_free(msg);
 			return 0;
 		case KIWI_BE_AUTHENTICATION:
@@ -179,7 +178,8 @@ od_backend_startup(od_server_t *server, kiwi_params_t *params)
 				return -1;
 			break;
 		case KIWI_BE_BACKEND_KEY_DATA:
-			rc = kiwi_fe_read_key(msg, &server->key);
+			rc = kiwi_fe_read_key(machine_msg_data(msg),
+			                      machine_msg_size(msg), &server->key);
 			machine_msg_free(msg);
 			if (rc == -1) {
 				od_error(&instance->logger, "startup", NULL, server,
@@ -193,27 +193,36 @@ od_backend_startup(od_server_t *server, kiwi_params_t *params)
 			uint32_t name_len;
 			char *value;
 			uint32_t value_len;
-			rc = kiwi_fe_read_parameter(msg, &name, &name_len, &value, &value_len);
+			rc = kiwi_fe_read_parameter(machine_msg_data(msg),
+			                            machine_msg_size(msg), &name, &name_len,
+			                            &value, &value_len);
 			if (rc == -1) {
 				machine_msg_free(msg);
 				od_error(&instance->logger, "startup", NULL, server,
 				         "failed to parse ParameterStatus message");
 				return -1;
 			}
-			/* track server parameters */
-			kiwi_param_t *param;
-			param = kiwi_param_allocate(name, name_len, value, value_len);
+
+			/* set server parameters */
+			kiwi_vars_update(&server->vars, name, name_len, value, value_len);
+
+			if (route_params) {
+				kiwi_param_t *param;
+				param = kiwi_param_allocate(name, name_len, value, value_len);
+				if (param)
+					kiwi_params_add(route_params, param);
+			}
+
 			machine_msg_free(msg);
-			if (param == NULL)
-				return -1;
-			kiwi_params_add(params, param);
 			break;
 		}
 		case KIWI_BE_NOTICE_RESPONSE:
 			machine_msg_free(msg);
 			break;
 		case KIWI_BE_ERROR_RESPONSE:
-			od_backend_error(server, "startup", msg);
+			od_backend_error(server, "startup",
+			                 machine_msg_data(msg),
+			                 machine_msg_size(msg));
 			server->error_connect = msg;
 			return -1;
 		default:
@@ -228,39 +237,42 @@ od_backend_startup(od_server_t *server, kiwi_params_t *params)
 }
 
 static inline int
-od_backend_connect_to(od_server_t *server,
-                      char *context,
-                      od_config_storage_t *server_config)
+od_backend_connect_to(od_server_t *server, char *context,
+                      od_rule_storage_t *storage)
 {
 	od_instance_t *instance = server->global->instance;
-	assert(server->io == NULL);
+	assert(server->io.io == NULL);
 
 	/* create io handle */
-	server->io = machine_io_create();
-	if (server->io == NULL)
+	machine_io_t *io;
+	io = machine_io_create();
+	if (io == NULL)
 		return -1;
 
 	/* set network options */
-	machine_set_nodelay(server->io, instance->config.nodelay);
+	machine_set_nodelay(io, instance->config.nodelay);
 	if (instance->config.keepalive > 0)
-		machine_set_keepalive(server->io, 1, instance->config.keepalive);
+		machine_set_keepalive(io, 1, instance->config.keepalive);
 	int rc;
-	rc = machine_set_readahead(server->io, instance->config.readahead);
+	rc = od_io_prepare(&server->io, io, instance->config.readahead);
 	if (rc == -1) {
 		od_error(&instance->logger, context, NULL, server,
-		         "failed to set readahead");
+		         "failed to set server io");
+		machine_close(io);
+		machine_io_free(io);
 		return -1;
 	}
 
 	/* set tls options */
-	if (server_config->tls_mode != OD_TLS_DISABLE) {
-		server->tls = od_tls_backend(server_config);
+	if (storage->tls_mode != OD_RULE_TLS_DISABLE) {
+		server->tls = od_tls_backend(storage);
 		if (server->tls == NULL)
 			return -1;
 	}
 
-	uint64_t time_connect_start;
-	time_connect_start = machine_time();
+	uint64_t time_connect_start = 0;
+	if (instance->config.log_session)
+		time_connect_start = machine_time_us();
 
 	struct sockaddr_un   saddr_un;
 	struct sockaddr_in   saddr_v4;
@@ -269,37 +281,37 @@ od_backend_connect_to(od_server_t *server,
 	struct addrinfo *ai = NULL;
 
 	/* resolve server address */
-	if (server_config->host)
+	if (storage->host)
 	{
 		/* assume IPv6 or IPv4 is specified */
 		int rc_resolve = -1;
-		if (strchr(server_config->host, ':')) {
+		if (strchr(storage->host, ':')) {
 			/* v6 */
 			memset(&saddr_v6, 0, sizeof(saddr_v6));
 			saddr_v6.sin6_family = AF_INET6;
-			saddr_v6.sin6_port   = htons(server_config->port);
-			rc_resolve = inet_pton(AF_INET6, server_config->host, &saddr_v6.sin6_addr);
+			saddr_v6.sin6_port   = htons(storage->port);
+			rc_resolve = inet_pton(AF_INET6, storage->host, &saddr_v6.sin6_addr);
 			saddr = (struct sockaddr*)&saddr_v6;
 		} else {
 			/* v4 or hostname */
 			memset(&saddr_v4, 0, sizeof(saddr_v4));
 			saddr_v4.sin_family = AF_INET;
-			saddr_v4.sin_port   = htons(server_config->port);
-			rc_resolve = inet_pton(AF_INET, server_config->host, &saddr_v4.sin_addr);
+			saddr_v4.sin_port   = htons(storage->port);
+			rc_resolve = inet_pton(AF_INET, storage->host, &saddr_v4.sin_addr);
 			saddr = (struct sockaddr*)&saddr_v4;
 		}
 
 		/* schedule getaddrinfo() execution */
 		if (rc_resolve != 1) {
 			char port[16];
-			od_snprintf(port, sizeof(port), "%d", server_config->port);
+			od_snprintf(port, sizeof(port), "%d", storage->port);
 
-			rc = machine_getaddrinfo(server_config->host, port, NULL, &ai, 0);
+			rc = machine_getaddrinfo(storage->host, port, NULL, &ai, 0);
 			if (rc != 0) {
 				od_error(&instance->logger, context, NULL, server,
 				         "failed to resolve %s:%d",
-				         server_config->host,
-				         server_config->port);
+				         storage->host,
+				         storage->port);
 				return -1;
 			}
 			assert(ai != NULL);
@@ -313,21 +325,22 @@ od_backend_connect_to(od_server_t *server,
 		od_snprintf(saddr_un.sun_path, sizeof(saddr_un.sun_path),
 		            "%s/.s.PGSQL.%d",
 		            instance->config.unix_socket_dir,
-		            server_config->port);
+		            storage->port);
 	}
 
-	uint64_t time_resolve;
-	time_resolve = machine_time() - time_connect_start;
+	uint64_t time_resolve = 0;
+	if (instance->config.log_session)
+		time_resolve = machine_time_us() - time_connect_start;
 
 	/* connect to server */
-	rc = machine_connect(server->io, saddr, UINT32_MAX);
+	rc = machine_connect(server->io.io, saddr, UINT32_MAX);
 	if (ai)
 		freeaddrinfo(ai);
 	if (rc == -1) {
-		if (server_config->host) {
+		if (storage->host) {
 			od_error(&instance->logger, context, server->client, server,
-			         "failed to connect to %s:%d", server_config->host,
-			         server_config->port);
+			         "failed to connect to %s:%d", storage->host,
+			         storage->port);
 		} else {
 			od_error(&instance->logger, context, server->client, server,
 			         "failed to connect to %s", saddr_un.sun_path);
@@ -336,22 +349,23 @@ od_backend_connect_to(od_server_t *server,
 	}
 
 	/* do tls handshake */
-	if (server_config->tls_mode != OD_TLS_DISABLE) {
-		rc = od_tls_backend_connect(server, &instance->logger, server_config);
+	if (storage->tls_mode != OD_RULE_TLS_DISABLE) {
+		rc = od_tls_backend_connect(server, &instance->logger, storage);
 		if (rc == -1)
 			return -1;
 	}
 
-	uint64_t time_connect;
-	time_connect = machine_time() - time_connect_start;
+	uint64_t time_connect = 0;
+	if (instance->config.log_session)
+		time_connect = machine_time_us() - time_connect_start;
 
 	/* log server connection */
 	if (instance->config.log_session) {
-		if (server_config->host) {
+		if (storage->host) {
 			od_log(&instance->logger, context, server->client, server,
 			       "new server connection %s:%d (connect time: %d usec, resolve time: %d usec)",
-			       server_config->host,
-			       server_config->port,
+			       storage->host,
+			       storage->port,
 			       (int)time_connect,
 			       (int)time_resolve);
 		} else {
@@ -367,98 +381,126 @@ od_backend_connect_to(od_server_t *server,
 }
 
 int
-od_backend_connect(od_server_t *server, char *context)
+od_backend_connect(od_server_t *server, char *context, kiwi_params_t *route_params)
 {
 	od_route_t *route = server->route;
 	assert(route != NULL);
 
-	od_config_storage_t *server_config;
-	server_config = route->config->storage;
+	od_rule_storage_t *storage;
+	storage = route->rule->storage;
 
 	/* connect to server */
 	int rc;
-	rc = od_backend_connect_to(server, context, server_config);
+	rc = od_backend_connect_to(server, context, storage);
 	if (rc == -1)
 		return -1;
 
-	kiwi_params_t params;
-	kiwi_params_init(&params);
-
 	/* send startup and do initial configuration */
-	rc = od_backend_startup(server, &params);
-	if (rc == -1) {
-		kiwi_params_free(&params);
-		return -1;
-	}
-
-	/* update route cache */
-	kiwi_params_lock_update(&route->params, &params);
-	return 0;
+	rc = od_backend_startup(server, route_params);
+	return rc;
 }
 
 int
-od_backend_connect_cancel(od_server_t *server,
-                          od_config_storage_t *server_config,
+od_backend_connect_cancel(od_server_t *server, od_rule_storage_t *storage,
                           kiwi_key_t *key)
 {
 	od_instance_t *instance = server->global->instance;
 	/* connect to server */
 	int rc;
-	rc = od_backend_connect_to(server, "cancel", server_config);
+	rc = od_backend_connect_to(server, "cancel", storage);
 	if (rc == -1)
 		return -1;
 	/* send cancel request */
 	machine_msg_t *msg;
-	msg = kiwi_fe_write_cancel(key->key_pid, key->key);
+	msg = kiwi_fe_write_cancel(NULL, key->key_pid, key->key);
 	if (msg == NULL)
 		return -1;
-	rc = machine_write(server->io, msg);
+	rc = od_write(&server->io, msg);
 	if (rc == -1) {
 		od_error(&instance->logger, "cancel", NULL, NULL,
 		         "write error: %s",
-		         machine_error(server->io));
-		return -1;
-	}
-	rc = machine_flush(server->io, UINT32_MAX);
-	if (rc == -1) {
-		od_error(&instance->logger, "cancel", NULL, NULL,
-		         "write error: %s",
-		         machine_error(server->io));
+		         od_io_error(&server->io));
 		return -1;
 	}
 	return 0;
 }
+
+int
+od_backend_update_parameter(od_server_t *server, char *context,
+                            char *data, uint32_t size,
+                            int server_only)
+{
+	od_instance_t *instance = server->global->instance;
+	od_client_t *client = server->client;
+
+	char     *name;
+	uint32_t  name_len;
+	char     *value;
+	uint32_t  value_len;
+	int rc;
+	rc = kiwi_fe_read_parameter(data, size, &name, &name_len,
+	                            &value, &value_len);
+	if (rc == -1) {
+		od_error(&instance->logger, context, NULL, server,
+		         "failed to parse ParameterStatus message");
+		return -1;
+	}
+
+	/* update server only or client and server parameter */
+	od_debug(&instance->logger, context, client, server,
+	         "%.*s = %.*s",
+	         name_len, name, value_len, value);
+
+	if (server_only)
+		kiwi_vars_update(&server->vars, name, name_len, value, value_len);
+	else
+		kiwi_vars_update_both(&client->vars, &server->vars, name, name_len,
+		                      value, value_len);
+	return 0;
+}
+
 
 int
 od_backend_ready_wait(od_server_t *server, char *context, int count,
                       uint32_t time_ms)
 {
 	od_instance_t *instance = server->global->instance;
-
 	int ready = 0;
 	for (;;)
 	{
 		machine_msg_t *msg;
-		msg = od_read(server->io, time_ms);
+		msg = od_read(&server->io, time_ms);
 		if (msg == NULL) {
 			if (! machine_timedout()) {
 				od_error(&instance->logger, context, server->client, server,
 				         "read error: %s",
-				         machine_error(server->io));
+				         od_io_error(&server->io));
 			}
 			return -1;
 		}
-		kiwi_be_type_t type = *(char*)machine_msg_get_data(msg);
+		kiwi_be_type_t type = *(char*)machine_msg_data(msg);
 		od_debug(&instance->logger, context, server->client, server, "%s",
 		         kiwi_be_type_to_string(type));
 
+		if (type == KIWI_BE_PARAMETER_STATUS) {
+			/* update server parameter */
+			int rc;
+			rc = od_backend_update_parameter(server, context,
+			                                 machine_msg_data(msg),
+			                                 machine_msg_size(msg), 1);
+			if (rc == -1) {
+				machine_msg_free(msg);
+				return -1;
+			}
+		} else
 		if (type == KIWI_BE_ERROR_RESPONSE) {
-			od_backend_error(server, context, msg);
+			od_backend_error(server, context, machine_msg_data(msg),
+			                 machine_msg_size(msg));
 			machine_msg_free(msg);
 			continue;
-		}
+		} else
 		if (type == KIWI_BE_READY_FOR_QUERY) {
-			od_backend_ready(server, msg);
+			od_backend_ready(server, machine_msg_data(msg), machine_msg_size(msg));
 			ready++;
 			if (ready == count) {
 				machine_msg_free(msg);
@@ -476,22 +518,15 @@ od_backend_query(od_server_t *server, char *context, char *query, int len)
 	od_instance_t *instance = server->global->instance;
 
 	machine_msg_t *msg;
-	msg = kiwi_fe_write_query(query, len);
+	msg = kiwi_fe_write_query(NULL, query, len);
 	if (msg == NULL)
 		return -1;
 	int rc;
-	rc = machine_write(server->io, msg);
+	rc = od_write(&server->io, msg);
 	if (rc == -1) {
 		od_error(&instance->logger, context, server->client, server,
 		         "write error: %s",
-		         machine_error(server->io));
-		return -1;
-	}
-	rc = machine_flush(server->io, UINT32_MAX);
-	if (rc == -1) {
-		od_error(&instance->logger, context, server->client, server,
-		         "write error: %s",
-		         machine_error(server->io));
+		         od_io_error(&server->io));
 		return -1;
 	}
 
@@ -500,49 +535,4 @@ od_backend_query(od_server_t *server, char *context, char *query, int len)
 
 	rc = od_backend_ready_wait(server, context, 1, UINT32_MAX);
 	return rc;
-}
-
-int
-od_backend_deploy(od_server_t *server, char *context,
-                  machine_msg_t *msg)
-{
-	int rc;
-	switch (*(char*)machine_msg_get_data(msg)) {
-	case KIWI_BE_ERROR_RESPONSE:
-		od_backend_error(server, context, msg);
-		break;
-	case KIWI_BE_READY_FOR_QUERY:
-		rc = od_backend_ready(server, msg);
-		if (rc == -1)
-			return -1;
-		server->deploy_sync--;
-		break;
-	}
-	return 0;
-}
-
-int
-od_backend_deploy_wait(od_server_t *server, char *context,
-                       uint32_t time_ms)
-{
-	od_instance_t *instance = server->global->instance;
-	while (server->deploy_sync > 0)
-	{
-		machine_msg_t *msg;
-		msg = od_read(server->io, time_ms);
-		if (msg == NULL) {
-			if (! machine_timedout()) {
-				od_error(&instance->logger, context, server->client, server,
-				         "read error: %s",
-				         machine_error(server->io));
-			}
-			return -1;
-		}
-		int rc;
-		rc = od_backend_deploy(server, context, msg);
-		machine_msg_free(msg);
-		if (rc == -1)
-			return -1;
-	}
-	return 0;
 }
