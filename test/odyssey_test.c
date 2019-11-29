@@ -42,6 +42,7 @@ extern void machinarium_test_channel_shared_create(void);
 extern void machinarium_test_channel_shared_rw0(void);
 extern void machinarium_test_channel_shared_rw1(void);
 extern void machinarium_test_channel_shared_rw2(void);
+extern void machinarium_test_sleeplock(void);
 extern void machinarium_test_producer_consumer0(void);
 extern void machinarium_test_producer_consumer1(void);
 extern void machinarium_test_producer_consumer2(void);
@@ -104,6 +105,7 @@ int main(int argc, char *argv[])
 	odyssey_test(machinarium_test_channel_shared_rw0);
 	odyssey_test(machinarium_test_channel_shared_rw1);
 	odyssey_test(machinarium_test_channel_shared_rw2);
+	odyssey_test(machinarium_test_sleeplock);
 	odyssey_test(machinarium_test_producer_consumer0);
 	odyssey_test(machinarium_test_producer_consumer1);
 	odyssey_test(machinarium_test_producer_consumer2);
@@ -134,5 +136,11 @@ int main(int argc, char *argv[])
 	odyssey_test(machinarium_test_tls_read_10mb2);
 	odyssey_test(machinarium_test_tls_read_multithread);
 	odyssey_test(machinarium_test_tls_read_var);
+
+	odyssey_shell_test("odyssey/setup");
+	odyssey_shell_test("odyssey/test_scram_backend");
+	odyssey_shell_test("odyssey/test_scram_frontend");
+	odyssey_shell_test("odyssey/teardown");
+
 	return 0;
 }

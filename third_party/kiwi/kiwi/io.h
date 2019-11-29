@@ -36,7 +36,7 @@ kiwi_read32(uint32_t *out, char **pos, uint32_t *size)
 	if (kiwi_unlikely(*size < sizeof(uint32_t)))
 		return -1;
 	unsigned char *ptr = (unsigned char*)*pos;
-	*out = ptr[0] << 24 | ptr[1] << 16 |
+	*out = ((uint32_t)ptr[0]) << 24 | ptr[1] << 16 |
 	       ptr[2] <<  8 | ptr[3];
 	*size -= sizeof(uint32_t);
 	*pos  += sizeof(uint32_t);
@@ -169,6 +169,7 @@ kiwi_read_startup_size(char *data, uint32_t data_size)
 KIWI_API static inline int
 kiwi_validate_startup_header(char *data, uint32_t data_size, uint32_t *size)
 {
+	(void)data_size; // Silent Compiler warnings
 	assert(data_size >= sizeof(uint32_t));
 	*size = kiwi_read_startup_size(data, sizeof(uint32_t));
 	/* do not expect big startup messages */
@@ -180,6 +181,7 @@ kiwi_validate_startup_header(char *data, uint32_t data_size, uint32_t *size)
 KIWI_API static inline int
 kiwi_validate_header(char *data, uint32_t data_size, uint32_t *size)
 {
+	(void)data_size; // Silent Compiler warnings
 	assert(data_size >= sizeof(kiwi_header_t));
 	*size = kiwi_read_size(data, sizeof(kiwi_header_t));
 

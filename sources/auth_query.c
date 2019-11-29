@@ -140,7 +140,7 @@ error:
 }
 
 __attribute__((hot)) static inline int
-od_auth_query_format(od_rule_t *rule, kiwi_var_t *user,
+od_auth_query_format(od_rule_t *rule, kiwi_var_t *user, char *peer,
                      char *output, int output_len)
 {
 	char *dst_pos = output;
@@ -153,17 +153,23 @@ od_auth_query_format(od_rule_t *rule, kiwi_var_t *user,
 			format_pos++;
 			if (od_unlikely(format_pos == format_end))
 				break;
-			if (*format_pos == 'u') {
-				int len;
-				len = od_snprintf(dst_pos, dst_end - dst_pos, "%s",
-				                  user->value);
+			int len;
+			switch (*format_pos) {
+			case 'u':
+				len = od_snprintf(dst_pos, dst_end - dst_pos, "%s", user->value);
 				dst_pos += len;
-			} else {
+				break;
+			case 'h':
+				len = od_snprintf(dst_pos, dst_end - dst_pos, "%s", peer);
+				dst_pos += len;
+				break;
+			default:
 				if (od_unlikely((dst_end - dst_pos) < 2))
 					break;
 				dst_pos[0] = '%';
 				dst_pos[1] = *format_pos;
 				dst_pos   += 2;
+				break;
 			}
 		} else {
 			if (od_unlikely((dst_end - dst_pos) < 1))
@@ -180,9 +186,8 @@ od_auth_query_format(od_rule_t *rule, kiwi_var_t *user,
 	return dst_pos - output;
 }
 
-
 int
-od_auth_query(od_global_t *global, od_rule_t *rule,
+od_auth_query(od_global_t *global, od_rule_t *rule, char *peer,
               kiwi_var_t *user,
               kiwi_password_t *password)
 {
@@ -215,7 +220,7 @@ od_auth_query(od_global_t *global, od_rule_t *rule,
 	}
 
 	/* attach */
-	status = od_router_attach(router, &instance->config, auth_client);
+	status = od_router_attach(router, &instance->config, auth_client, false);
 	if (status != OD_ROUTER_OK) {
 		od_router_unroute(router, auth_client);
 		od_client_free(auth_client);
@@ -244,7 +249,7 @@ od_auth_query(od_global_t *global, od_rule_t *rule,
 	/* preformat and execute query */
 	char query[512];
 	int  query_len;
-	query_len = od_auth_query_format(rule, user, query, sizeof(query));
+	query_len = od_auth_query_format(rule, user, peer, query, sizeof(query));
 
 	rc = od_auth_query_do(server, query, query_len, password);
 	if (rc == -1) {

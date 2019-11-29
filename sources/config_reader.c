@@ -64,6 +64,7 @@ enum
 	OD_LCACHE_COROUTINE,
 	OD_LCOROUTINE_STACK_SIZE,
 	OD_LCLIENT_MAX,
+	OD_LCLIENT_MAX_ROUTING,
 	OD_LCLIENT_FWD_ERROR,
 	OD_LTLS,
 	OD_LTLS_CA_FILE,
@@ -88,6 +89,7 @@ enum
 	OD_LSTORAGE_PASSWORD,
 	OD_LAUTHENTICATION,
 	OD_LAUTH_COMMON_NAME,
+	OD_LAUTH_PAM_SERVICE,
 	OD_LAUTH_QUERY,
 	OD_LAUTH_QUERY_DB,
 	OD_LAUTH_QUERY_USER
@@ -147,6 +149,7 @@ od_config_keywords[] =
 	od_keyword("cache_coroutine",      OD_LCACHE_COROUTINE),
 	od_keyword("coroutine_stack_size", OD_LCOROUTINE_STACK_SIZE),
 	od_keyword("client_max",           OD_LCLIENT_MAX),
+	od_keyword("client_max_routing",           OD_LCLIENT_MAX_ROUTING),
 	od_keyword("client_fwd_error",     OD_LCLIENT_FWD_ERROR),
 	od_keyword("tls",                  OD_LTLS),
 	od_keyword("tls_ca_file",          OD_LTLS_CA_FILE),
@@ -176,6 +179,7 @@ od_config_keywords[] =
 	od_keyword("auth_query",           OD_LAUTH_QUERY),
 	od_keyword("auth_query_db",        OD_LAUTH_QUERY_DB),
 	od_keyword("auth_query_user",      OD_LAUTH_QUERY_USER),
+	od_keyword("auth_pam_service",     OD_LAUTH_PAM_SERVICE),
 	{ 0, 0, 0 }
 };
 
@@ -640,6 +644,11 @@ od_config_reader_route(od_config_reader_t *reader, char *db_name, int db_name_le
 				return -1;
 			break;
 		}
+		/* auth_pam_service */
+		case OD_LAUTH_PAM_SERVICE:
+			if (! od_config_reader_string(reader, &route->auth_pam_service))
+				return -1;
+			break;
 		/* auth_query */
 		case OD_LAUTH_QUERY:
 			if (! od_config_reader_string(reader, &route->auth_query))
@@ -944,6 +953,11 @@ od_config_reader_parse(od_config_reader_t *reader)
 				return -1;
 			config->client_max_set = 1;
 			continue;
+		/* client_max_routing */
+		case OD_LCLIENT_MAX_ROUTING:
+			if (! od_config_reader_number(reader, &config->client_max_routing))
+				return -1;
+			continue;
 		/* readahead */
 		case OD_LREADAHEAD:
 			if (! od_config_reader_number(reader, &config->readahead))
@@ -1041,5 +1055,8 @@ od_config_reader_import(od_config_t *config, od_rules_t *rules, od_error_t *erro
 		return -1;
 	rc = od_config_reader_parse(&reader);
 	od_config_reader_close(&reader);
+
+	if (!config->client_max_routing)
+		config->client_max_routing = config->workers * 4;
 	return rc;
 }

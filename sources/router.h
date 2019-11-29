@@ -24,7 +24,8 @@ struct od_router
 	pthread_mutex_t lock;
 	od_rules_t      rules;
 	od_route_pool_t route_pool;
-	int             clients;
+	od_atomic_u32_t clients;
+	od_atomic_u32_t clients_routing;
 };
 
 static inline void
@@ -54,10 +55,7 @@ void
 od_router_unroute(od_router_t*, od_client_t*);
 
 od_router_status_t
-od_router_wait_retry(od_router_t *router, od_client_t *client);
-
-od_router_status_t
-od_router_attach(od_router_t*, od_config_t*, od_client_t*);
+od_router_attach(od_router_t*, od_config_t*, od_client_t*, bool);
 
 void
 od_router_detach(od_router_t*, od_config_t*, od_client_t*);

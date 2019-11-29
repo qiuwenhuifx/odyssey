@@ -8,7 +8,7 @@
 */
 
 #include "sources/macro.h"
-#include "sources/version.h"
+#include "sources/build.h"
 #include "sources/atomic.h"
 #include "sources/util.h"
 #include "sources/error.h"
@@ -31,6 +31,8 @@
 #include "sources/io.h"
 #include "sources/relay.h"
 #include "sources/dns.h"
+#include "sources/postgres.h"
+#include "sources/scram.h"
 #include "sources/server.h"
 #include "sources/server_pool.h"
 #include "sources/client.h"
@@ -53,6 +55,7 @@
 #include "sources/cancel.h"
 #include "sources/console.h"
 #include "sources/reset.h"
+#include "sources/pam.h"
 #include "sources/deploy.h"
 #include "sources/frontend.h"
 #include "sources/backend.h"

@@ -23,6 +23,10 @@ od_frontend_close(od_client_t *client)
 {
 	assert(client->route == NULL);
 	assert(client->server == NULL);
+
+	od_router_t *router = client->global->router;
+	od_atomic_u32_dec(&router->clients);
+
 	od_io_close(&client->io);
 	if (client->notify_io) {
 		machine_close(client->notify_io);
@@ -85,7 +89,7 @@ od_frontend_error_is_too_many_connections(od_client_t *client)
 {
 	od_server_t *server = client->server;
 	assert(server != NULL);
-	if(server->error_connect == NULL)
+	if (server->error_connect == NULL)
 		return false;
 	kiwi_fe_error_t error;
 	int rc;
@@ -94,7 +98,7 @@ od_frontend_error_is_too_many_connections(od_client_t *client)
 	                        &error);
 	if (rc == -1)
 		return false;
-	return strcmp(error.code,"53300") == 0;
+	return strcmp(error.code, KIWI_TOO_MANY_CONNECTIONS) == 0;
 }
 
 static int
@@ -152,21 +156,22 @@ od_frontend_attach(od_client_t *client, char *context, kiwi_params_t *route_para
 	od_router_t *router = client->global->router;
 	od_route_t *route = client->route;
 
-	od_router_status_t status;
-
+	bool wait_for_idle = false;
 	for (;;)
 	{
-		od_server_t *server;
-		status = od_router_attach(router, &instance->config, client);
+		od_router_status_t status;
+		status = od_router_attach(router, &instance->config, client, wait_for_idle);
 		if (status != OD_ROUTER_OK)
 		{
-			if (status == OD_ROUTER_ERROR_TIMEDOUT)
+			if (status == OD_ROUTER_ERROR_TIMEDOUT) {
 				od_error(&instance->logger, "router", client, NULL,
 				         "server pool wait timed out, closing");
+				return OD_EATTACH_TOO_MANY_CONNECTIONS;
+			}
 			return OD_EATTACH;
 		}
-		server = client->server;
 
+		od_server_t *server = client->server;
 		if (server->io.io && !machine_connected(server->io.io)) {
 			od_log(&instance->logger, context, client, server,
 			       "server disconnected, close connection and retry attach");
@@ -184,18 +189,15 @@ od_frontend_attach(od_client_t *client, char *context, kiwi_params_t *route_para
 
 		int rc;
 		rc = od_backend_connect(server, context, route_params);
-		if (rc == -1) {
-			/* if pool timeout is enabled we can retry */
-			bool can_retry = route->rule->pool_timeout > 0 &&
-					od_frontend_error_is_too_many_connections(client);
-			if (can_retry){
-				/* Wait until someone will put connection back to pool */
-				rc = od_router_wait_retry(route, client);
-				if (rc == -1) {
-					od_error(&instance->logger, "router", client, NULL,
-					         "server pool wait timed out after receiving 'too many connections', closing");
-					return OD_EATTACH;
-				}
+		if (rc == -1)
+		{
+			/* In case of 'too many connections' error, retry attach attempt by
+			 * waiting for a idle server connection for pool_timeout ms
+			 */
+			wait_for_idle = route->rule->pool_timeout > 0 &&
+			                od_frontend_error_is_too_many_connections(client);
+			if (wait_for_idle) {
+				od_router_close(router, client);
 				continue;
 			}
 			return OD_ESERVER_CONNECT;
@@ -774,6 +776,13 @@ od_frontend_cleanup(od_client_t *client, char *context,
 		                  "failed to get remote server connection");
 		break;
 
+	case OD_EATTACH_TOO_MANY_CONNECTIONS:
+		assert(server == NULL);
+		assert(client->route != NULL);
+		od_frontend_error(client, KIWI_TOO_MANY_CONNECTIONS,
+		                  "sorry, too many clients for pool");
+		break;
+
 	case OD_ECLIENT_READ:
 	case OD_ECLIENT_WRITE:
 		/* close client connection and reuse server
@@ -856,6 +865,7 @@ od_frontend(void *arg)
 		od_io_close(&client->io);
 		machine_close(client->notify_io);
 		od_client_free(client);
+		od_atomic_u32_dec(&router->clients_routing);
 		return;
 	}
 
@@ -866,6 +876,17 @@ od_frontend(void *arg)
 		od_io_close(&client->io);
 		machine_close(client->notify_io);
 		od_client_free(client);
+		od_atomic_u32_dec(&router->clients_routing);
+		return;
+	}
+
+	/* ensure global client_max limit */
+	uint32_t clients = od_atomic_u32_inc(&router->clients);
+	if (instance->config.client_max_set && clients >= (uint32_t)instance->config.client_max) {
+		od_frontend_error(client, KIWI_TOO_MANY_CONNECTIONS,
+		                  "too many connections");
+		od_frontend_close(client);
+		od_atomic_u32_dec(&router->clients_routing);
 		return;
 	}
 
@@ -873,6 +894,7 @@ od_frontend(void *arg)
 	rc = od_frontend_startup(client);
 	if (rc == -1) {
 		od_frontend_close(client);
+		od_atomic_u32_dec(&router->clients_routing);
 		return;
 	}
 
@@ -889,6 +911,7 @@ od_frontend(void *arg)
 			od_router_cancel_free(&cancel);
 		}
 		od_frontend_close(client);
+		od_atomic_u32_dec(&router->clients_routing);
 		return;
 	}
 
@@ -906,6 +929,10 @@ od_frontend(void *arg)
 	/* route client */
 	od_router_status_t router_status;
 	router_status = od_router_route(router, &instance->config, client);
+
+	/* routing is over */
+	od_atomic_u32_dec(&router->clients_routing);
+
 	switch (router_status) {
 	case OD_ROUTER_ERROR:
 		od_error(&instance->logger, "startup", client, NULL,

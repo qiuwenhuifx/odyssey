@@ -28,6 +28,7 @@ typedef enum
 	OD_RULE_AUTH_BLOCK,
 	OD_RULE_AUTH_CLEAR_TEXT,
 	OD_RULE_AUTH_MD5,
+	OD_RULE_AUTH_SCRAM_SHA_256,
 	OD_RULE_AUTH_CERT
 } od_rule_auth_type_t;
 
@@ -85,6 +86,7 @@ struct od_rule
 	od_rule_auth_type_t     auth_mode;
 	char                   *auth_query;
 	char                   *auth_query_db;
+	char                   *auth_pam_service;
 	char                   *auth_query_user;
 	int                     auth_common_name_default;
 	od_list_t               auth_common_names;
