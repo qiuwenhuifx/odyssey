@@ -104,15 +104,20 @@ od_tls_frontend_accept(od_client_t *client,
 			         od_io_error(&client->io));
 			return -1;
 		}
-		rc = machine_set_tls(client->io.io, tls);
+		rc = machine_set_tls(client->io.io, tls, config->client_login_timeout);
 		if (rc == -1) {
-			od_error(logger, "tls", client, NULL, "error: %s",
-			         od_io_error(&client->io));
+			od_error(logger, "tls", client, NULL, "error: %s, login time %d us",
+			         od_io_error(&client->io), machine_time_us() - client->time_accept);
 			return -1;
 		}
 		od_debug(logger, "tls", client, NULL, "ok");
 		return 0;
 	}
+
+	/* Client sends cancel request without encryption */
+	if (client->startup.is_cancel)
+		return 0;
+
 	switch (config->tls_mode) {
 	case OD_CONFIG_TLS_DISABLE:
 	case OD_CONFIG_TLS_ALLOW:
@@ -203,7 +208,7 @@ od_tls_backend_connect(od_server_t *server,
 	case 'S':
 		/* supported */
 		od_debug(logger, "tls", NULL, server, "supported");
-		rc = machine_set_tls(server->io.io, server->tls);
+		rc = machine_set_tls(server->io.io, server->tls, UINT32_MAX);
 		if (rc == -1) {
 			od_error(logger, "tls", NULL, server, "error: %s",
 			         od_io_error(&server->io));

@@ -95,7 +95,7 @@ machine_stat(uint64_t *coroutine_count,
 /* signals */
 
 MACHINE_API int
-machine_signal_init(sigset_t*);
+machine_signal_init(sigset_t*, sigset_t*);
 
 MACHINE_API int
 machine_signal_wait(uint32_t time_ms);
@@ -242,7 +242,7 @@ MACHINE_API int
 machine_set_keepalive(machine_io_t*, int enable, int delay);
 
 MACHINE_API int
-machine_set_tls(machine_io_t*, machine_tls_t*);
+machine_set_tls(machine_io_t*, machine_tls_t*, uint32_t);
 
 MACHINE_API int
 machine_io_verify(machine_io_t*, char *common_name);

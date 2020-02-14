@@ -40,7 +40,8 @@ endif()
 
 # postgresql
 find_package(PostgreSQL REQUIRED)
-set(od_libraries ${od_libraries} ${POSTGRESQL_LIBRARY} ${PQ_LIBRARY})
+
+set(od_libraries ${od_libraries} ${POSTGRESQL_LIBRARY} ${POSTGRESQL_LIBPGPORT} ${PQ_LIBRARY})
 include_directories(${POSTGRESQL_INCLUDE_DIR})
 
 # use BoringSSL or OpenSSL
@@ -86,6 +87,8 @@ message(STATUS "CMAKE_BUILD_TYPE:       ${CMAKE_BUILD_TYPE}")
 message(STATUS "BUILD_DEBIAN:           ${BUILD_DEBIAN}")
 message(STATUS "POSTGRESQL_INCLUDE_DIR: ${POSTGRESQL_INCLUDE_DIR}")
 message(STATUS "POSTGRESQL_LIBRARY:     ${POSTGRESQL_LIBRARY}")
+message(STATUS "POSTGRESQL_LIBPGPORT:   ${POSTGRESQL_LIBPGPORT}")
+message(STATUS "PG_VERSION_NUM:         ${PG_VERSION_NUM}")
 message(STATUS "PQ_LIBRARY:             ${PQ_LIBRARY}")
 message(STATUS "USE_BORINGSSL:          ${USE_BORINGSSL}")
 message(STATUS "BORINGSSL_ROOT_DIR:     ${BORINGSSL_ROOT_DIR}")

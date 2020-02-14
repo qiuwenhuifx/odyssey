@@ -125,13 +125,12 @@ od_backend_startup(od_server_t *server, kiwi_params_t *route_params)
 		{ "replication", 12}, { NULL, 0 }
 	};
 	int argc = 4;
-	if (route->rule->storage->storage_type == OD_RULE_STORAGE_REPLICATION ||
-	    route->id.physical_rep) {
+	if (route->id.physical_rep) {
 		argc = 6;
 		argv[5].name = "on";
 		argv[5].len  = 3;
 	} else
-	if (route->rule->storage->storage_type == OD_RULE_STORAGE_REPLICATION_LOGICAL) {
+	if (route->id.logical_rep) {
 		argc = 6;
 		argv[5].name = "database";
 		argv[5].len  = 9;
@@ -513,7 +512,7 @@ od_backend_ready_wait(od_server_t *server, char *context, int count,
 }
 
 int
-od_backend_query(od_server_t *server, char *context, char *query, int len)
+od_backend_query(od_server_t *server, char *context, char *query, int len, uint32_t timeout)
 {
 	od_instance_t *instance = server->global->instance;
 
@@ -533,6 +532,6 @@ od_backend_query(od_server_t *server, char *context, char *query, int len)
 	/* update server sync state */
 	od_server_sync_request(server, 1);
 
-	rc = od_backend_ready_wait(server, context, 1, UINT32_MAX);
+	rc = od_backend_ready_wait(server, context, 1, timeout);
 	return rc;
 }
