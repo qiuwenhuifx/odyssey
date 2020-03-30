@@ -28,21 +28,23 @@ enum
 	OD_LLISTS,
 	OD_LSET,
 	OD_LPOOLS,
+	OD_LPOOLS_EXTENDED,
 	OD_LDATABASES
 };
 
 static od_keyword_t
 od_console_keywords[] =
 {
-	od_keyword("kill_client", OD_LKILL_CLIENT),
-	od_keyword("show",        OD_LSHOW),
-	od_keyword("stats",       OD_LSTATS),
-	od_keyword("servers",     OD_LSERVERS),
-	od_keyword("clients",     OD_LCLIENTS),
-	od_keyword("lists",       OD_LLISTS),
-	od_keyword("set",         OD_LSET),
-	od_keyword("pools",       OD_LPOOLS),
-	od_keyword("databases",   OD_LDATABASES),
+	od_keyword("kill_client",    OD_LKILL_CLIENT),
+	od_keyword("show",           OD_LSHOW),
+	od_keyword("stats",          OD_LSTATS),
+	od_keyword("servers",        OD_LSERVERS),
+	od_keyword("clients",        OD_LCLIENTS),
+	od_keyword("lists",          OD_LLISTS),
+	od_keyword("set",            OD_LSET),
+	od_keyword("pools",          OD_LPOOLS),
+	od_keyword("pools_extended", OD_LPOOLS_EXTENDED),
+	od_keyword("databases",      OD_LDATABASES),
 	{ 0, 0, 0 }
 };
 
@@ -53,6 +55,7 @@ od_console_show_stats_add(machine_msg_t *stream,
                           od_stat_t *total,
                           od_stat_t *avg)
 {
+    assert(stream);
 	int offset;
 	machine_msg_t *msg;
 	msg = kiwi_be_write_data_row(stream, &offset);
@@ -95,7 +98,7 @@ od_console_show_stats_add(machine_msg_t *stream,
 	if (rc == -1)
 		return -1;
 	/* total_wait_time */
-	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0);
+	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0UL);
 	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 	if (rc == -1)
 		return -1;
@@ -130,7 +133,7 @@ od_console_show_stats_add(machine_msg_t *stream,
 	if (rc == -1)
 		return -1;
 	/* avg_wait_time */
-	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0);
+	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0UL);
 	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 	if (rc == -1)
 		return -1;
@@ -151,6 +154,7 @@ od_console_show_stats_cb(char *database,
 static inline int
 od_console_show_stats(od_client_t *client, machine_msg_t *stream)
 {
+    assert(stream);
 	od_router_t *router = client->global->router;
 	od_cron_t *cron = client->global->cron;
 
@@ -181,11 +185,7 @@ od_console_show_stats(od_client_t *client, machine_msg_t *stream)
 	                            cron->stat_time_us,
 	                            argv);
 
-	msg = kiwi_be_write_complete(stream, "SHOW", 5);
-	if (msg == NULL)
-		return -1;
-
-	return 0;
+	return kiwi_be_write_complete(stream, "SHOW", 5);
 }
 
 static inline int
@@ -193,6 +193,9 @@ od_console_show_pools_add_cb(od_route_t *route, void **argv)
 {
 	int offset;
 	machine_msg_t *stream = argv[0];
+	bool *extended = argv[1];
+	double *quantiles = argv[2];
+	int *quantiles_count = argv[3];
 	machine_msg_t *msg;
 	msg = kiwi_be_write_data_row(stream, &offset);
 	if (msg == NULL)
@@ -232,27 +235,27 @@ od_console_show_pools_add_cb(od_route_t *route, void **argv)
 	if (rc == -1)
 		goto error;
 	/* sv_used */
-	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0);
+	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0UL);
 	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 	if (rc == -1)
 		goto error;
 	/* sv_tested */
-	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0);
+	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0UL);
 	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 	if (rc == -1)
 		goto error;
 	/* sv_login */
-	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0);
+	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0UL);
 	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 	if (rc == -1)
 		goto error;
 	/* maxwait */
-	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0);
+	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0UL);
 	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 	if (rc == -1)
 		goto error;
 	/* maxwait_us */
-	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0);
+	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0UL);
 	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 	if (rc == -1)
 		goto error;
@@ -265,6 +268,36 @@ od_console_show_pools_add_cb(od_route_t *route, void **argv)
 		rc = kiwi_be_write_data_row_add(stream, offset, "transaction", 11);
 	if (rc == -1)
 		goto error;
+
+	if (*extended) {
+        /* bytes recived */
+        data_len = od_snprintf(data, sizeof(data), "%" PRIu64, route->stats.recv_client);
+        rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
+        if (rc == -1)
+            goto error;
+        /* bytes sent */
+        data_len = od_snprintf(data, sizeof(data), "%" PRIu64, route->stats.recv_server);
+        rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
+        if (rc == -1)
+            goto error;
+        od_hgram_frozen_t queries_hgram = {0};
+        od_hgram_frozen_t transactions_hgram = {0};
+        od_hgram_freeze(route->stats.query_hgram, &queries_hgram, OD_HGRAM_FREEZ_REDUCE);
+        od_hgram_freeze(route->stats.transaction_hgram, &transactions_hgram, OD_HGRAM_FREEZ_REDUCE);
+        for (int i = 0; i < *quantiles_count; i++) {
+            double q = quantiles[i];
+            /* query quantile */
+            data_len = od_snprintf(data, sizeof(data), "%" PRIu64, od_hgram_quantile(&queries_hgram, q));
+            rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
+            if (rc == -1)
+                goto error;
+            /* transaction quantile */
+            data_len = od_snprintf(data, sizeof(data), "%" PRIu64, od_hgram_quantile(&transactions_hgram, q));
+            rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
+            if (rc == -1)
+                goto error;
+        }
+    }
 
 	od_route_unlock(route);
 	return 0;
@@ -326,7 +359,7 @@ od_console_show_databases_add_cb(od_route_t *route, void **argv)
 		goto error;
 
 	/* reserve_pool */
-	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0);
+	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0UL);
 	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 	if (rc == -1)
 		goto error;
@@ -355,13 +388,13 @@ od_console_show_databases_add_cb(od_route_t *route, void **argv)
 		goto error;
 
 	/* paused */
-	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0);
+	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0UL);
 	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 	if (rc == -1)
 		goto error;
 
 	/* disabled */
-	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0);
+	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0UL);
 	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 	if (rc == -1)
 		goto error;
@@ -376,6 +409,7 @@ od_console_show_databases_add_cb(od_route_t *route, void **argv)
 static inline int
 od_console_show_databases(od_client_t *client, machine_msg_t *stream)
 {
+    assert(stream);
 	od_router_t *router = client->global->router;
 
 	machine_msg_t *msg;
@@ -402,17 +436,18 @@ od_console_show_databases(od_client_t *client, machine_msg_t *stream)
 	if (rc == -1)
 		return -1;
 
-	msg = kiwi_be_write_complete(stream, "SHOW", 5);
-	if (msg == NULL)
-		return -1;
-
-	return 0;
+	return kiwi_be_write_complete(stream, "SHOW", 5);
 }
 
 static inline int
-od_console_show_pools(od_client_t *client, machine_msg_t *stream)
+od_console_show_pools(od_client_t *client, machine_msg_t *stream, bool extended)
 {
+	assert(stream);
+	int rc;
 	od_router_t *router = client->global->router;
+	od_route_t *route = client->route;
+	double *quantiles = route->rule->quantiles;
+	int quantiles_count = route->rule->quantiles_count;
 
 	machine_msg_t *msg;
 	msg = kiwi_be_write_row_descriptionf(stream,
@@ -432,17 +467,43 @@ od_console_show_pools(od_client_t *client, machine_msg_t *stream)
 	if (msg == NULL)
 		return -1;
 
-	void *argv[] = { stream };
-	int rc;
+	if (extended) {
+        char *bytes_rcv = "bytes_recieved";
+        rc = kiwi_be_write_row_description_add(msg, 0, bytes_rcv, strlen(bytes_rcv),
+                                               0, 0, 23 /* INT4OID */, 4, 0, 0);
+        if (rc == -1)
+            return -1;
+        char *bytes_sent = "bytes_sent";
+        rc = kiwi_be_write_row_description_add(msg, 0, bytes_sent, strlen(bytes_sent),
+                                               0, 0, 23 /* INT4OID */, 4, 0, 0);
+        if (rc == -1)
+            return -1;
+
+
+        for (int i = 0; i < quantiles_count; i++) {
+            char caption[KIWI_MAX_VAR_SIZE];
+            int  caption_len;
+            caption_len = od_snprintf(caption, sizeof(caption), "query_%.6g",
+                                      quantiles[i]);
+            rc = kiwi_be_write_row_description_add(msg, 0, caption, caption_len,
+                                                   0, 0, 23 /* INT4OID */, 4, 0, 0);
+            if (rc == -1)
+                return -1;
+            caption_len = od_snprintf(caption, sizeof(caption), "transaction_%.6g",
+                                      quantiles[i]);
+            rc = kiwi_be_write_row_description_add(msg, 0, caption, caption_len,
+                                                   0, 0, 23 /* INT4OID */, 4, 0, 0);
+            if (rc == -1)
+                return -1;
+        }
+	}
+
+	void *argv[] = { stream, &extended, quantiles, &quantiles_count };
 	rc = od_router_foreach(router, od_console_show_pools_add_cb, argv);
 	if (rc == -1)
 		return -1;
 
-	msg = kiwi_be_write_complete(stream, "SHOW", 5);
-	if (msg == NULL)
-		return -1;
-
-	return 0;
+	return kiwi_be_write_complete(stream, "SHOW", 5);
 }
 
 static inline int
@@ -458,7 +519,7 @@ od_console_show_servers_server_cb(od_server_t *server, void **argv)
 		return -1;
 	/* type */
 	char data[64];
-	int  data_len;
+	size_t  data_len;
 	data_len = od_snprintf(data, sizeof(data), "S");
 	int rc;
 	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
@@ -575,6 +636,7 @@ od_console_show_servers_cb(od_route_t *route, void **argv)
 static inline int
 od_console_show_servers(od_client_t *client, machine_msg_t *stream)
 {
+    assert(stream);
 	od_router_t *router = client->global->router;
 
 	machine_msg_t *msg;
@@ -602,11 +664,7 @@ od_console_show_servers(od_client_t *client, machine_msg_t *stream)
 	void *argv[] = { stream };
 	od_router_foreach(router, od_console_show_servers_cb, argv);
 
-	msg = kiwi_be_write_complete(stream, "SHOW", 5);
-	if (msg == NULL)
-		return -1;
-
-	return 0;
+	return kiwi_be_write_complete(stream, "SHOW", 5);
 }
 
 static inline int
@@ -619,7 +677,7 @@ od_console_show_clients_callback(od_client_t *client, void **argv)
 	if (msg == NULL)
 		return -1;
 	char data[64];
-	int  data_len;
+	size_t  data_len;
 	/* type */
 	data_len = od_snprintf(data, sizeof(data), "C");
 	int rc;
@@ -743,6 +801,7 @@ od_console_show_clients_cb(od_route_t *route, void **argv)
 static inline int
 od_console_show_clients(od_client_t *client, machine_msg_t *stream)
 {
+    assert(stream);
 	od_router_t *router = client->global->router;
 
 	machine_msg_t *msg;
@@ -770,11 +829,7 @@ od_console_show_clients(od_client_t *client, machine_msg_t *stream)
 	void *argv[] = { stream };
 	od_router_foreach(router, od_console_show_clients_cb, argv);
 
-	msg = kiwi_be_write_complete(stream, "SHOW", 5);
-	if (msg == NULL)
-		return -1;
-
-	return 0;
+	return kiwi_be_write_complete(stream, "SHOW", 5);
 }
 
 static inline int
@@ -806,8 +861,9 @@ od_console_show_lists_cb(od_route_t *route, void **argv)
 	od_route_lock(route);
 
 	int *used_servers = argv[0];
+	int *free_servers = argv[1];
 	(*used_servers) += route->server_pool.count_active;
-	(*used_servers) += route->server_pool.count_idle;
+	(*free_servers) += route->server_pool.count_idle;
 
 	od_route_unlock(route);
 	return 0;
@@ -816,6 +872,7 @@ od_console_show_lists_cb(od_route_t *route, void **argv)
 static inline int
 od_console_show_lists(od_client_t *client, machine_msg_t *stream)
 {
+    assert(stream);
 	od_router_t *router = client->global->router;
 
 	/* Gather router information.
@@ -826,10 +883,11 @@ od_console_show_lists(od_client_t *client, machine_msg_t *stream)
 	od_router_lock(router);
 
 	int router_used_servers = 0;
+	int router_free_servers = 0;
 	int router_pools        = router->route_pool.count;
 	int router_clients      = od_atomic_u32_of(&router->clients);
 
-	void *argv[] = { &router_used_servers };
+	void *argv[] = { &router_used_servers, &router_free_servers };
 	od_route_pool_foreach(&router->route_pool, od_console_show_lists_cb, argv);
 
 	od_router_unlock(router);
@@ -864,7 +922,7 @@ od_console_show_lists(od_client_t *client, machine_msg_t *stream)
 	if (rc == -1)
 		return -1;
 	/* free_servers */
-	rc = od_console_show_lists_add(stream, "free_servers", 0);
+	rc = od_console_show_lists_add(stream, "free_servers", router_free_servers);
 	if (rc == -1)
 		return -1;
 	/* used_servers */
@@ -887,15 +945,13 @@ od_console_show_lists(od_client_t *client, machine_msg_t *stream)
 	rc = od_console_show_lists_add(stream, "dns_pending", 0);
 	if (rc == -1)
 		return -1;
-	msg = kiwi_be_write_complete(stream, "SHOW", 5);
-	if (msg == NULL)
-		return -1;
-	return 0;
+	return kiwi_be_write_complete(stream, "SHOW", 5);
 }
 
 static inline int
 od_console_show(od_client_t *client, machine_msg_t *stream, od_parser_t *parser)
 {
+    assert(stream);
 	od_token_t token;
 	int rc;
 	rc = od_parser_next(parser, &token);
@@ -914,7 +970,9 @@ od_console_show(od_client_t *client, machine_msg_t *stream, od_parser_t *parser)
 	case OD_LSTATS:
 		return od_console_show_stats(client, stream);
 	case OD_LPOOLS:
-		return od_console_show_pools(client, stream);
+		return od_console_show_pools(client, stream, false);
+	case OD_LPOOLS_EXTENDED:
+		return od_console_show_pools(client, stream, true);
 	case OD_LDATABASES:
 		return od_console_show_databases(client, stream);
 	case OD_LSERVERS:
@@ -950,11 +1008,7 @@ od_console_set(od_client_t *client, machine_msg_t *stream)
 {
 	(void)client;
 	/* reply success */
-	machine_msg_t *msg;
-	msg = kiwi_be_write_complete(stream, "SET", 4);
-	if (msg == NULL)
-		return -1;
-	return 0;
+	return kiwi_be_write_complete(stream, "SET", 4);
 }
 
 int

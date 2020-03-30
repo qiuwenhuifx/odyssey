@@ -11,7 +11,7 @@ typedef struct mm_machine mm_machine_t;
 
 struct mm_machine
 {
-	int                  online;
+	volatile int         online;
 	uint64_t             id;
 	char                *name;
 	machine_coroutine_t  main;
@@ -24,6 +24,8 @@ struct mm_machine
 	mm_coroutine_cache_t coroutine_cache;
 	mm_loop_t            loop;
 	mm_list_t            link;
+    struct mm_tls_ctx   *server_tls_ctx;
+    struct mm_tls_ctx   *client_tls_ctx;
 };
 
 extern __thread mm_machine_t *mm_self;

@@ -53,7 +53,7 @@ machine_main(void *arg)
 	/* run main loop */
 	machine->online = 1;
 	for (;;) {
-		if (! mm_scheduler_online(&machine->scheduler))
+		if (! (mm_scheduler_online(&machine->scheduler) && machine->online))
 			break;
 		mm_loop_step(&machine->loop);
 	}
@@ -74,6 +74,8 @@ machine_create(char *name, machine_coroutine_t function, void *arg)
 	machine->id = 0;
 	machine->main = function;
 	machine->main_arg = arg;
+	machine->server_tls_ctx = NULL;
+	machine->client_tls_ctx = NULL;
 	machine->name = NULL;
 	if (name) {
 		machine->name = strdup(name);
@@ -146,6 +148,17 @@ machine_wait(uint64_t machine_id)
 }
 
 MACHINE_API int
+machine_stop(uint64_t machine_id)
+{
+	mm_machine_t *machine;
+	machine = mm_machinemgr_delete_by_id(&machinarium.machine_mgr, machine_id);
+	if (machine == NULL)
+		return -1;
+	machine->online = 0;
+	return 0;
+}
+
+MACHINE_API int
 machine_active(void)
 {
 	return mm_self->online;
@@ -158,7 +171,7 @@ machine_self(void)
 }
 
 MACHINE_API void
-machine_stop(void)
+machine_stop_current(void)
 {
 	mm_self->online = 0;
 }

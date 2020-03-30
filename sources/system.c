@@ -67,6 +67,7 @@ od_system_server(void *arg)
 			         "failed to get eventfd for client: %s",
 			         machine_error(client_io));
 			machine_close(notify_io);
+            machine_io_free(notify_io);
 			machine_close(client_io);
 			machine_io_free(client_io);
 			continue;
@@ -77,6 +78,8 @@ od_system_server(void *arg)
 		if (client == NULL) {
 			od_error(&instance->logger, "server", NULL, NULL,
 			         "failed to allocate client object");
+            machine_close(notify_io);
+            machine_io_free(notify_io);
 			machine_close(client_io);
 			machine_io_free(client_io);
 			continue;
@@ -86,6 +89,8 @@ od_system_server(void *arg)
 		if (rc == -1) {
 			od_error(&instance->logger, "server", NULL, NULL,
 			         "failed to allocate client io object");
+            machine_close(notify_io);
+            machine_io_free(notify_io);
 			machine_close(client_io);
 			machine_io_free(client_io);
 			od_client_free(client);
@@ -96,8 +101,7 @@ od_system_server(void *arg)
 		client->tls           = server->tls;
 		client->time_accept   = 0;
 		client->notify_io     = notify_io;
-		if (instance->config.log_session)
-			client->time_accept = machine_time_us();
+		client->time_accept   = machine_time_us();
 
 		/* create new client event and pass it to worker pool */
 		machine_msg_t *msg;
@@ -408,12 +412,17 @@ od_system_signal_handler(void *arg)
 		case SIGTERM:
 			od_log(&instance->logger, "system", NULL, NULL,
 			       "SIGTERM received, shutting down");
+			od_worker_pool_stop(system->global->worker_pool);
+			/* No time for caution */
 			od_system_cleanup(system);
 			exit(0);
 			break;
 		case SIGINT:
 			od_log(&instance->logger, "system", NULL, NULL,
 			       "SIGINT received, shutting down");
+			od_worker_pool_stop(system->global->worker_pool);
+			/* Prevent OpenSSL usage during deinitialization */
+			od_worker_pool_wait(system->global->worker_pool);
 			od_system_cleanup(system);
 			exit(0);
 			break;
