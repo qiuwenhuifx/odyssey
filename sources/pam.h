@@ -5,9 +5,9 @@
  * Odyssey.
  *
  * Scalable PostgreSQL connection pooler.
-*/
+ */
 
 int
-od_pam_auth(char *od_pam_service, kiwi_var_t *user, kiwi_password_t *password);
+od_pam_auth(char *od_pam_service, kiwi_var_t *user, kiwi_password_t *password, machine_io_t *io);
 
 #endif /* ODYSSEY_PAM_H */
