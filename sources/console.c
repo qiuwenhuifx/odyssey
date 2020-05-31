@@ -17,10 +17,12 @@
 #include <machinarium.h>
 #include <kiwi.h>
 #include <odyssey.h>
+#include <math.h>
 
 enum
 {
 	OD_LKILL_CLIENT,
+	OD_LRELOAD,
 	OD_LSHOW,
 	OD_LSTATS,
 	OD_LSERVERS,
@@ -34,6 +36,7 @@ enum
 
 static od_keyword_t od_console_keywords[] = {
 	od_keyword("kill_client", OD_LKILL_CLIENT),
+	od_keyword("reload", OD_LRELOAD),
 	od_keyword("show", OD_LSHOW),
 	od_keyword("stats", OD_LSTATS),
 	od_keyword("servers", OD_LSERVERS),
@@ -194,6 +197,9 @@ od_console_show_pools_add_cb(od_route_t *route, void **argv)
 	double *quantiles     = argv[2];
 	int *quantiles_count  = argv[3];
 	machine_msg_t *msg;
+	td_histogram_t *transactions_hgram = NULL;
+	td_histogram_t *queries_hgram      = NULL;
+	td_histogram_t *freeze_hgram       = NULL;
 	msg = kiwi_be_write_data_row(stream, &offset);
 	if (msg == NULL)
 		return -1;
@@ -283,37 +289,50 @@ od_console_show_pools_add_cb(od_route_t *route, void **argv)
 		rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 		if (rc == -1)
 			goto error;
-		od_hgram_frozen_t queries_hgram      = { 0 };
-		od_hgram_frozen_t transactions_hgram = { 0 };
-		od_hgram_freeze(
-		  route->stats.query_hgram, &queries_hgram, OD_HGRAM_FREEZ_REDUCE);
-		od_hgram_freeze(route->stats.transaction_hgram,
-		                &transactions_hgram,
-		                OD_HGRAM_FREEZ_REDUCE);
+		transactions_hgram = td_new(QUANTILES_COMPRESSION);
+		queries_hgram      = td_new(QUANTILES_COMPRESSION);
+		freeze_hgram       = td_new(QUANTILES_COMPRESSION);
+		if (route->stats.enable_quantiles) {
+			for (size_t i = 0; i < QUANTILES_WINDOW; ++i) {
+				td_copy(freeze_hgram, route->stats.transaction_hgram[i]);
+				td_merge(transactions_hgram, freeze_hgram);
+				td_copy(freeze_hgram, route->stats.query_hgram[i]);
+				td_merge(queries_hgram, freeze_hgram);
+			}
+		}
 		for (int i = 0; i < *quantiles_count; i++) {
 			double q = quantiles[i];
 			/* query quantile */
-			data_len = od_snprintf(data,
-			                       sizeof(data),
-			                       "%" PRIu64,
-			                       od_hgram_quantile(&queries_hgram, q));
+			double query_quantile       = td_value_at(queries_hgram, q);
+			double transaction_quantile = td_value_at(transactions_hgram, q);
+			if (isnan(query_quantile)) {
+				query_quantile = 0;
+			}
+			if (isnan(transaction_quantile)) {
+				transaction_quantile = 0;
+			}
+			data_len = od_snprintf(
+			  data, sizeof(data), "%" PRIu64, (uint64_t)query_quantile);
 			rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 			if (rc == -1)
 				goto error;
 			/* transaction quantile */
-			data_len = od_snprintf(data,
-			                       sizeof(data),
-			                       "%" PRIu64,
-			                       od_hgram_quantile(&transactions_hgram, q));
+			data_len = od_snprintf(
+			  data, sizeof(data), "%" PRIu64, (uint64_t)transaction_quantile);
 			rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 			if (rc == -1)
 				goto error;
 		}
 	}
-
+	td_safe_free(transactions_hgram);
+	td_safe_free(queries_hgram);
+	td_safe_free(freeze_hgram);
 	od_route_unlock(route);
 	return 0;
 error:
+	td_safe_free(transactions_hgram);
+	td_safe_free(queries_hgram);
+	td_safe_free(freeze_hgram);
 	od_route_unlock(route);
 	return -1;
 }
@@ -527,6 +546,7 @@ od_console_show_pools(od_client_t *client, machine_msg_t *stream, bool extended)
 		}
 	}
 
+	od_instance_t *instance = client->global->instance;
 	void *argv[] = { stream, &extended, quantiles, &quantiles_count };
 	rc = od_router_foreach(router, od_console_show_pools_add_cb, argv);
 	if (rc == -1)
@@ -1040,6 +1060,16 @@ od_console_kill_client(od_client_t *client,
 }
 
 static inline int
+od_console_reload(od_client_t *client, machine_msg_t *stream)
+{
+	od_instance_t *instance = client->global->instance;
+
+	od_log(&instance->logger, "console", NULL, NULL, "RELOAD command received");
+	od_system_config_reload(client->global->system);
+	kiwi_be_write_complete(stream, "RELOAD", 7);
+}
+
+static inline int
 od_console_set(od_client_t *client, machine_msg_t *stream)
 {
 	(void)client;
@@ -1099,6 +1129,11 @@ od_console_query(od_client_t *client,
 			break;
 		case OD_LKILL_CLIENT:
 			rc = od_console_kill_client(client, stream, &parser);
+			if (rc == -1)
+				goto bad_query;
+			break;
+		case OD_LRELOAD:
+			rc = od_console_reload(client, stream);
 			if (rc == -1)
 				goto bad_query;
 			break;
