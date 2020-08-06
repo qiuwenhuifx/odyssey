@@ -6,6 +6,8 @@
  *
  * Scalable PostgreSQL connection pooler.
  */
+#include "odyssey.h"
+#include "err_logger.h"
 
 typedef struct od_route od_route_t;
 
@@ -13,25 +15,41 @@ struct od_route
 {
 	od_rule_t *rule;
 	od_route_id_t id;
+
 	od_stat_t stats;
 	od_stat_t stats_prev;
-	int stats_mark;
+	bool stats_mark_db;
+
 	od_server_pool_t server_pool;
 	od_client_pool_t client_pool;
 	kiwi_params_lock_t params;
 	machine_channel_t *wait_bus;
 	pthread_mutex_t lock;
+
+	od_error_logger_t *frontend_err_logger;
+	bool extra_logging_enabled;
+
 	od_list_t link;
 };
 
 static inline void
-od_route_init(od_route_t *route)
+od_route_init(od_route_t *route, bool extra_route_logging)
 {
 	route->rule = NULL;
 	od_route_id_init(&route->id);
 	od_server_pool_init(&route->server_pool);
 	od_client_pool_init(&route->client_pool);
-	route->stats_mark = 0;
+
+	/* stat init */
+	route->stats_mark_db         = false;
+	route->extra_logging_enabled = extra_route_logging;
+	if (extra_route_logging) {
+		/* error logging */;
+		route->frontend_err_logger = od_err_logger_create_default();
+	} else {
+		route->frontend_err_logger = NULL;
+	}
+
 	od_stat_init(&route->stats);
 	od_stat_init(&route->stats_prev);
 	kiwi_params_lock_init(&route->params);
@@ -54,6 +72,11 @@ od_route_free(od_route_t *route)
 			td_free(route->stats.query_hgram[i]);
 		}
 	}
+
+	if (route->extra_logging_enabled) {
+		od_err_logger_free(route->frontend_err_logger);
+	}
+
 	pthread_mutex_destroy(&route->lock);
 	free(route);
 }
@@ -64,7 +87,7 @@ od_route_allocate(int is_shared)
 	od_route_t *route = malloc(sizeof(*route));
 	if (route == NULL)
 		return NULL;
-	od_route_init(route);
+	od_route_init(route, false);
 	route->wait_bus = machine_channel_create(is_shared);
 	if (route->wait_bus == NULL) {
 		od_route_free(route);

@@ -189,7 +189,10 @@ extern "C"
 
 	MACHINE_API int machine_set_keepalive(machine_io_t *,
 	                                      int enable,
-	                                      int delay);
+	                                      int delay,
+	                                      int interval,
+	                                      int probes,
+	                                      int usr_timeout);
 
 	MACHINE_API int machine_set_tls(machine_io_t *, machine_tls_t *, uint32_t);
 
@@ -272,7 +275,7 @@ extern "C"
 	                              uint32_t time_ms);
 
 	/* lrand48 */
-	MACHINE_API long int machine_lrand48();
+	MACHINE_API long int machine_lrand48(void);
 
 #ifdef __cplusplus
 }

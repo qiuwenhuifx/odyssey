@@ -18,6 +18,9 @@ typedef int (*od_route_pool_stat_database_cb_t)(char *database,
                                                 od_stat_t *avg,
                                                 void **argv);
 
+typedef od_retcode_t (
+  *od_route_pool_stat_route_error_cb_t)(od_error_logger_t *l, void **argv);
+
 typedef int (*od_route_pool_cb_t)(od_route_t *, void **);
 
 typedef struct od_route_pool od_route_pool_t;
@@ -25,14 +28,22 @@ typedef struct od_route_pool od_route_pool_t;
 struct od_route_pool
 {
 	od_list_t list;
+	/* used for counting error for client without concrete route
+	 * like default_db.usr1, db1.default, etc
+	 * */
+	od_error_logger_t *err_logger_general;
 	int count;
 };
+
+typedef od_retcode_t (
+  *od_route_pool_stat_frontend_error_cb_t)(od_route_pool_t *pool, void **argv);
 
 static inline void
 od_route_pool_init(od_route_pool_t *pool)
 {
 	od_list_init(&pool->list);
-	pool->count = 0;
+	pool->err_logger_general = od_err_logger_create_default();
+	pool->count              = 0;
 }
 
 static inline void
@@ -131,11 +142,10 @@ od_route_pool_stat(od_route_pool_t *pool,
 		od_stat_t avg;
 		od_stat_init(&avg);
 		if (route->stats.enable_quantiles) {
-			next_tdigest =
-			  (route->stats.current_tdigest + 1) % QUANTILES_WINDOW;
-			td_reset(
-			  route->stats.transaction_hgram[route->stats.current_tdigest]);
-			td_reset(route->stats.query_hgram[route->stats.current_tdigest]);
+			uint8_t current_tdigest = route->stats.current_tdigest;
+			next_tdigest            = (current_tdigest + 1) % QUANTILES_WINDOW;
+			td_reset(route->stats.transaction_hgram[next_tdigest]);
+			td_reset(route->stats.query_hgram[next_tdigest]);
 			route->stats.current_tdigest = next_tdigest;
 		}
 
@@ -162,7 +172,7 @@ od_route_pool_stat_database_mark(od_route_pool_t *pool,
 	{
 		od_route_t *route;
 		route = od_container_of(i, od_route_t, link);
-		if (route->stats_mark)
+		if (route->stats_mark_db)
 			continue;
 		if (route->id.database_len != database_len)
 			continue;
@@ -172,19 +182,19 @@ od_route_pool_stat_database_mark(od_route_pool_t *pool,
 		od_stat_sum(current, &route->stats);
 		od_stat_sum(prev, &route->stats_prev);
 
-		route->stats_mark++;
+		route->stats_mark_db = true;
 	}
 }
 
 static inline void
-od_route_pool_stat_unmark(od_route_pool_t *pool)
+od_route_pool_stat_unmark_db(od_route_pool_t *pool)
 {
 	od_route_t *route;
 	od_list_t *i;
 	od_list_foreach(&pool->list, i)
 	{
-		route             = od_container_of(i, od_route_t, link);
-		route->stats_mark = 0;
+		route                = od_container_of(i, od_route_t, link);
+		route->stats_mark_db = false;
 	}
 }
 
@@ -199,7 +209,7 @@ od_route_pool_stat_database(od_route_pool_t *pool,
 	od_list_foreach(&pool->list, i)
 	{
 		route = od_container_of(i, od_route_t, link);
-		if (route->stats_mark)
+		if (route->stats_mark_db)
 			continue;
 
 		/* gather current and previous cron stats */
@@ -219,13 +229,21 @@ od_route_pool_stat_database(od_route_pool_t *pool,
 		rc = callback(
 		  route->id.database, route->id.database_len - 1, &current, &avg, argv);
 		if (rc == -1) {
-			od_route_pool_stat_unmark(pool);
+			od_route_pool_stat_unmark_db(pool);
 			return -1;
 		}
 	}
 
-	od_route_pool_stat_unmark(pool);
+	od_route_pool_stat_unmark_db(pool);
 	return 0;
+}
+
+static inline od_retcode_t
+od_route_pool_stat_err_frontend(od_route_pool_t *pool,
+                                od_route_pool_stat_frontend_error_cb_t callback,
+                                void **argv)
+{
+	return callback(pool, argv);
 }
 
 #endif /* ODYSSEY_ROUTE_POOL_H */

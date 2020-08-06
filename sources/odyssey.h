@@ -14,14 +14,18 @@
 #include "sources/error.h"
 #include "sources/list.h"
 #include "sources/pid.h"
-#include "sources/daemon.h"
 #include "sources/id.h"
 #include "sources/logger.h"
 #include "sources/parser.h"
 
 #include "sources/config.h"
 #include "sources/rules.h"
+#include "sources/od_dlsym.h"
+#include "sources/config_common.h"
+#include "sources/module.h"
+
 #include "sources/config_reader.h"
+#include "sources/daemon.h"
 
 #include "sources/msg.h"
 #include "sources/global.h"
@@ -37,6 +41,9 @@
 #include "sources/server_pool.h"
 #include "sources/client.h"
 #include "sources/client_pool.h"
+
+#include "sources/counter.h"
+#include "sources/err_logger.h"
 
 #include "sources/route_id.h"
 #include "sources/route.h"
@@ -59,7 +66,7 @@
 #include "sources/deploy.h"
 #include "sources/frontend.h"
 #include "sources/backend.h"
-
 #include "sources/tdigest.h"
+#include "sources/attribute.h"
 
 #endif /* ODYSSEY_H */

@@ -52,7 +52,12 @@ od_system_server(void *arg)
 		/* set network options */
 		machine_set_nodelay(client_io, instance->config.nodelay);
 		if (instance->config.keepalive > 0)
-			machine_set_keepalive(client_io, 1, instance->config.keepalive);
+			machine_set_keepalive(client_io,
+			                      1,
+			                      instance->config.keepalive,
+			                      instance->config.keepalive_keep_interval,
+			                      instance->config.keepalive_probes,
+			                      instance->config.keepalive_usr_timeout);
 
 		machine_io_t *notify_io;
 		notify_io = machine_io_create();
@@ -266,6 +271,10 @@ od_system_server_start(od_system_t *system,
 		free(server);
 		return -1;
 	}
+
+	/* register server in list for possible TLS reload */
+	od_router_t *router = system->global->router;
+	od_list_append(&router->servers, &server->link);
 	return 0;
 }
 
@@ -382,9 +391,12 @@ od_system_config_reload(od_system_t *system)
 	od_rules_t rules;
 	od_rules_init(&rules);
 
+	od_module_t modules;
+	od_modules_init(&modules);
+
 	int rc;
-	rc =
-	  od_config_reader_import(&config, &rules, &error, instance->config_file);
+	rc = od_config_reader_import(
+	  &config, &rules, &error, &modules, instance->config_file);
 	if (rc == -1) {
 		od_error(&instance->logger, "config", NULL, NULL, "%s", error.error);
 		od_config_free(&config);
@@ -401,6 +413,22 @@ od_system_config_reload(od_system_t *system)
 
 	rc = od_rules_validate(&rules, &config, &instance->logger);
 	od_config_reload(&instance->config, &config);
+
+	/* Reload TLS certificates */
+	od_list_t *i;
+	od_list_foreach(&router->servers, i)
+	{
+		od_system_server_t *server;
+		server = od_container_of(i, od_system_server_t, link);
+		if (server->config->tls_mode != OD_CONFIG_TLS_DISABLE) {
+			machine_tls_t *tls = od_tls_frontend(server->config);
+			/* TODO: suppport changing cert files */
+			if (tls != NULL) {
+				server->tls = tls;
+			}
+		}
+	}
+
 	od_config_free(&config);
 	if (rc == -1) {
 		od_rules_free(&rules);
@@ -469,6 +497,8 @@ od_system_signal_handler(void *arg)
 				od_worker_pool_stop(system->global->worker_pool);
 				/* No time for caution */
 				od_system_cleanup(system);
+				/* TODO:  */
+				od_modules_unload_fast(system->global->modules);
 				exit(0);
 				break;
 			case SIGINT:
@@ -480,6 +510,7 @@ od_system_signal_handler(void *arg)
 				od_worker_pool_stop(system->global->worker_pool);
 				/* Prevent OpenSSL usage during deinitialization */
 				od_worker_pool_wait(system->global->worker_pool);
+				od_modules_unload(&instance->logger, system->global->modules);
 				od_system_cleanup(system);
 				exit(0);
 				break;

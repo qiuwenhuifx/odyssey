@@ -11,8 +11,24 @@ execute_process(COMMAND git describe --always
                 OUTPUT_STRIP_TRAILING_WHITESPACE
                 ERROR_QUIET)
 
+execute_process(COMMAND git rev-list --count HEAD
+                OUTPUT_VARIABLE OD_VERSION_NUMBER
+                RESULT_VARIABLE OD_VERSION_NUMBER_RESULT
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET)
+
+if(NOT "${OD_VERSION_NUMBER_RESULT}" STREQUAL "0")
+    set(OD_VERSION_GIT "unknown")
+    add_definitions(-DOD_VERSION_NUMBER="unknown")
+else()
+    add_definitions(-DOD_VERSION_NUMBER="${OD_VERSION_NUMBER}")
+endif()
+
 if(NOT "${OD_VERSION_GIT_RESULT}" STREQUAL "0")
     set(OD_VERSION_GIT "unknown")
+    add_definitions(-DOD_VERSION_GIT="unknown")
+else()
+    add_definitions(-DOD_VERSION_GIT="${OD_VERSION_GIT}")
 endif()
 
 if ("${CMAKE_BUILD_TYPE}" STREQUAL "")
@@ -29,6 +45,7 @@ elseif("${CMAKE_BUILD_TYPE}" STREQUAL "TSAN")
 endif()
 
 string(TOLOWER ${CMAKE_BUILD_TYPE} OD_VERSION_BUILD)
+add_definitions(-DOD_VERSION_BUILD="${OD_VERSION_BUILD}")
 
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 find_package(Threads REQUIRED)
@@ -55,12 +72,13 @@ if (USE_BORINGSSL)
     if (BORINGSSL_FOUND)
         set(od_ssl ${BORINGSSL_LIBRARIES})
         include_directories(${BORINGSSL_INCLUDE_DIR})
-    endif()
-else()
-   find_package(OpenSSL REQUIRED)
-   set(od_ssl ${OPENSSL_LIBRARIES})
-   include_directories(${OPENSSL_INCLUDE_DIR})
-endif()
+    endif ()
+else ()
+    find_package(OpenSSL REQUIRED)
+    set(od_ssl ${OPENSSL_LIBRARIES})
+    include_directories(${OPENSSL_INCLUDE_DIR})
+    add_compile_definitions(USE_SSL)
+endif ()
 
 # use PAM
 find_package(PAM)
@@ -85,7 +103,7 @@ include_directories(${KIWI_INCLUDE_DIRS})
 set(od_libraries ${od_libraries} ${od_pam})
 
 message(STATUS "")
-message(STATUS "Odyssey (version: ${OD_VERSION_GIT} ${OD_VERSION_BUILD})")
+message(STATUS "Odyssey (version: ${OD_VERSION_NUMBER}-${OD_VERSION_GIT}-${OD_VERSION_BUILD})")
 message(STATUS "")
 message(STATUS "CMAKE_BUILD_TYPE:       ${CMAKE_BUILD_TYPE}")
 message(STATUS "BUILD_DEBIAN:           ${BUILD_DEBIAN}")

@@ -17,6 +17,9 @@
 #include <machinarium.h>
 #include <kiwi.h>
 #include <odyssey.h>
+#ifdef PAM_FOUND
+#include <pam.h>
+#endif
 
 void
 od_rules_init(od_rules_t *rules)
@@ -208,6 +211,9 @@ od_rules_add(od_rules_t *rules)
 	rule->auth_common_name_default = 0;
 	rule->auth_common_names_count  = 0;
 	rule->server_lifetime_us       = 3600 * 1000000L;
+#ifdef PAM_FOUND
+	rule->auth_pam_data = od_pam_auth_data_create();
+#endif
 	od_list_init(&rule->auth_common_names);
 	od_list_init(&rule->link);
 	od_list_append(&rules->rules, &rule->link);
@@ -250,6 +256,9 @@ od_rules_rule_free(od_rule_t *rule)
 		auth = od_container_of(i, od_rule_auth_t, link);
 		od_rules_auth_free(auth);
 	}
+#ifdef PAM_FOUND
+	od_pam_auth_data_free(rule->auth_pam_data);
+#endif
 	od_list_unlink(&rule->link);
 	free(rule);
 }
@@ -312,7 +321,11 @@ od_rules_forward(od_rules_t *rules, char *db_name, char *user_name)
 }
 
 od_rule_t *
-od_rules_match(od_rules_t *rules, char *db_name, char *user_name, int db_is_default, int user_is_default)
+od_rules_match(od_rules_t *rules,
+               char *db_name,
+               char *user_name,
+               int db_is_default,
+               int user_is_default)
 {
 	od_list_t *i;
 	od_list_foreach(&rules->rules, i)
@@ -423,6 +436,17 @@ od_rules_rule_compare(od_rule_t *a, od_rule_t *b)
 		if (strcmp(a->password, b->password) != 0)
 			return 0;
 	} else if (a->password || b->password) {
+		return 0;
+	}
+
+	/* quantiles changed */
+	if (a->quantiles_count == b->quantiles_count) {
+		if (a->quantiles_count != 0 &&
+		    memcmp(a->quantiles,
+		           b->quantiles,
+		           sizeof(double) * a->quantiles_count) != 0)
+			return 0;
+	} else {
 		return 0;
 	}
 
@@ -584,6 +608,9 @@ od_rules_merge(od_rules_t *rules, od_rules_t *src)
 		od_list_unlink(&rule->link);
 		od_list_init(&rule->link);
 		od_list_append(&rules->rules, &rule->link);
+#ifdef PAM_FOUND
+		rule->auth_pam_data = od_pam_auth_data_create();
+#endif
 		count_new++;
 	}
 

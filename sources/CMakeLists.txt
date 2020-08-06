@@ -1,4 +1,3 @@
-
 set(od_binary ${CMAKE_PROJECT_NAME})
 set(od_src
     daemon.c
@@ -13,6 +12,7 @@ set(od_src
     cron.c
     worker.c
     tls.c
+    attribute.c
     auth_query.c
     auth.c
     scram.c
@@ -23,10 +23,12 @@ set(od_src
     frontend.c
     backend.c
     instance.c
-        main.c
+    main.c
     misc.c
     tdigest.c
-)
+    module.c
+    counter.c
+    err_logger.c)
 
 if (PAM_FOUND)
    list(APPEND od_src pam.c)

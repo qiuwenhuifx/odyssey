@@ -22,6 +22,7 @@
 #include <machinarium.h>
 #include <kiwi.h>
 #include <odyssey.h>
+#include "module.h"
 
 void
 od_instance_init(od_instance_t *instance)
@@ -73,6 +74,7 @@ od_instance_main(od_instance_t *instance, int argc, char **argv)
 	od_router_t router;
 	od_cron_t cron;
 	od_worker_pool_t worker_pool;
+	od_module_t modules;
 	od_global_t global;
 
 	od_log(&instance->logger, "startup", NULL, NULL, "Starting Odyssey");
@@ -81,15 +83,18 @@ od_instance_main(od_instance_t *instance, int argc, char **argv)
 	od_router_init(&router);
 	od_cron_init(&cron);
 	od_worker_pool_init(&worker_pool);
-	od_global_init(&global, instance, &system, &router, &cron, &worker_pool);
+	od_modules_init(&modules);
+	od_global_init(
+	  &global, instance, &system, &router, &cron, &worker_pool, &modules);
 
 	/* validate command line options */
 	if (argc != 2) {
 		od_usage(instance, argv[0]);
-		return -1;
+		goto error;
 	}
 	if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
 		od_usage(instance, argv[0]);
+		od_router_free(&router);
 		return 0;
 	}
 	instance->config_file = argv[1];
@@ -98,22 +103,27 @@ od_instance_main(od_instance_t *instance, int argc, char **argv)
 	od_error_t error;
 	od_error_init(&error);
 	int rc;
-	rc = od_config_reader_import(
-	  &instance->config, &router.rules, &error, instance->config_file);
+	rc = od_config_reader_import(&instance->config,
+	                             &router.rules,
+	                             &error,
+	                             &modules,
+	                             instance->config_file);
 	if (rc == -1) {
 		od_error(&instance->logger, "config", NULL, NULL, "%s", error.error);
-		return -1;
+		goto error;
 	}
 
 	/* validate configuration */
 	rc = od_config_validate(&instance->config, &instance->logger);
-	if (rc == -1)
-		return -1;
+	if (rc == -1) {
+		goto error;
+	}
 
 	/* validate rules */
 	rc = od_rules_validate(&router.rules, &instance->config, &instance->logger);
-	if (rc == -1)
-		return -1;
+	if (rc == -1) {
+		goto error;
+	}
 
 	/* configure logger */
 	od_logger_set_format(&instance->logger, instance->config.log_format);
@@ -123,8 +133,9 @@ od_instance_main(od_instance_t *instance, int argc, char **argv)
 	/* run as daemon */
 	if (instance->config.daemonize) {
 		rc = od_daemonize();
-		if (rc == -1)
-			return -1;
+		if (rc == -1) {
+			goto error;
+		}
 		/* update pid */
 		od_pid_init(&instance->pid);
 	}
@@ -139,7 +150,7 @@ od_instance_main(od_instance_t *instance, int argc, char **argv)
 			         NULL,
 			         "failed to open log file '%s'",
 			         instance->config.log_file);
-			return -1;
+			goto error;
 		}
 	}
 
@@ -195,7 +206,7 @@ od_instance_main(od_instance_t *instance, int argc, char **argv)
 	if (rc == -1) {
 		od_error(
 		  &instance->logger, "init", NULL, NULL, "failed to init machinarium");
-		return -1;
+		goto error;
 	}
 
 	/* create pid file */
@@ -204,8 +215,13 @@ od_instance_main(od_instance_t *instance, int argc, char **argv)
 
 	/* start system machine thread */
 	rc = od_system_start(&system, &global);
-	if (rc == -1)
-		return -1;
+	if (rc == -1) {
+		goto error;
+	}
 
 	return machine_wait(system.machine);
+
+error:
+	od_router_free(&router);
+	return NOT_OK_RESPONSE;
 }

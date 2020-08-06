@@ -52,6 +52,9 @@ enum
 	OD_LBACKLOG,
 	OD_LNODELAY,
 	OD_LKEEPALIVE,
+	OD_LKEEPALIVE_INTERVAL,
+	OD_LKEEPALIVE_PROBES,
+	OD_LKEEPALIVE_USR_TIMEOUT,
 	OD_LREADAHEAD,
 	OD_LWORKERS,
 	OD_LRESOLVERS,
@@ -99,18 +102,8 @@ enum
 	OD_LAUTH_QUERY_DB,
 	OD_LAUTH_QUERY_USER,
 	OD_LQUANTILES,
+	OD_LMODULE,
 };
-
-typedef struct
-{
-	od_parser_t parser;
-	od_config_t *config;
-	od_rules_t *rules;
-	od_error_t *error;
-	char *config_file;
-	char *data;
-	int data_size;
-} od_config_reader_t;
 
 static od_keyword_t od_config_keywords[] = {
 	/* main */
@@ -141,6 +134,9 @@ static od_keyword_t od_config_keywords[] = {
 	od_keyword("backlog", OD_LBACKLOG),
 	od_keyword("nodelay", OD_LNODELAY),
 	od_keyword("keepalive", OD_LKEEPALIVE),
+	od_keyword("keepalive_keep_interval", OD_LKEEPALIVE_INTERVAL),
+	od_keyword("keepalive_probes", OD_LKEEPALIVE_PROBES),
+	od_keyword("keepalive_usr_timeout", OD_LKEEPALIVE_USR_TIMEOUT),
 	od_keyword("readahead", OD_LREADAHEAD),
 	od_keyword("workers", OD_LWORKERS),
 	od_keyword("resolvers", OD_LRESOLVERS),
@@ -190,6 +186,7 @@ static od_keyword_t od_config_keywords[] = {
 	od_keyword("auth_query_user", OD_LAUTH_QUERY_USER),
 	od_keyword("auth_pam_service", OD_LAUTH_PAM_SERVICE),
 	od_keyword("quantiles", OD_LQUANTILES),
+	od_keyword("load_module", OD_LMODULE),
 	{ 0, 0, 0 }
 };
 
@@ -610,7 +607,8 @@ static int
 od_config_reader_route(od_config_reader_t *reader,
                        char *db_name,
                        int db_name_len,
-                       int db_is_default)
+                       int db_is_default,
+                       od_module_t *module)
 {
 	char *user_name     = NULL;
 	int user_name_len   = 0;
@@ -632,7 +630,8 @@ od_config_reader_route(od_config_reader_t *reader,
 
 	/* ensure route does not exists and add new route */
 	od_rule_t *route;
-	route = od_rules_match(reader->rules, db_name, user_name, db_is_default, user_is_default);
+	route = od_rules_match(
+	  reader->rules, db_name, user_name, db_is_default, user_is_default);
 	if (route) {
 		od_errorf(
 		  reader->error, "route '%s.%s': is redefined", db_name, user_name);
@@ -684,9 +683,28 @@ od_config_reader_route(od_config_reader_t *reader,
 		od_keyword_t *keyword;
 		keyword = od_keyword_match(od_config_keywords, &token);
 		if (keyword == NULL) {
-			od_config_reader_error(reader, &token, "unknown parameter");
-			return -1;
+			od_list_t *i;
+			bool token_ok = false;
+			od_list_foreach(&module->link, i)
+			{
+				od_module_t *curr_module;
+				curr_module = od_container_of(i, od_module_t, link);
+				rc =
+				  curr_module->config_init_cb(route->user_name, reader, &token);
+				if (rc == OD_MODULE_CB_OK_RETCODE) {
+					// do not "break" cycle here - let every module to read
+					// this init param
+					token_ok = true;
+				}
+			}
+			if (!token_ok) {
+				od_config_reader_error(reader, &token, "unknown parameter");
+				return -1;
+			}
+			/* continue reading config */
+			continue;
 		}
+
 		switch (keyword->id) {
 			/* authentication */
 			case OD_LAUTHENTICATION:
@@ -755,13 +773,18 @@ od_config_reader_route(od_config_reader_t *reader,
 			/* quantiles */
 			case OD_LQUANTILES: {
 				char *quantiles_str = NULL;
-				if (!od_config_reader_string(reader, &quantiles_str))
-					return -1;
+				if (!od_config_reader_string(reader, &quantiles_str)) {
+					free(quantiles_str);
+					return NOT_OK_RESPONSE;
+				}
 				if (!od_config_reader_quantiles(reader,
 				                                quantiles_str,
 				                                &route->quantiles,
-				                                &route->quantiles_count))
-					return -1;
+				                                &route->quantiles_count)) {
+					free(quantiles_str);
+					return NOT_OK_RESPONSE;
+				}
+				free(quantiles_str);
 			} break;
 			/* application_name_add_host */
 			case OD_LAPPLICATION_NAME_ADD_HOST:
@@ -835,7 +858,6 @@ od_config_reader_route(od_config_reader_t *reader,
 					return -1;
 				continue;
 			default:
-				od_config_reader_error(reader, &token, "unexpected parameter");
 				return -1;
 		}
 	}
@@ -845,7 +867,7 @@ od_config_reader_route(od_config_reader_t *reader,
 }
 
 static int
-od_config_reader_database(od_config_reader_t *reader)
+od_config_reader_database(od_config_reader_t *reader, od_module_t *module)
 {
 	char *db_name     = NULL;
 	int db_name_len   = 0;
@@ -902,7 +924,7 @@ od_config_reader_database(od_config_reader_t *reader)
 			/* user */
 			case OD_LUSER:
 				rc = od_config_reader_route(
-				  reader, db_name, db_name_len, db_is_default);
+				  reader, db_name, db_name_len, db_is_default, module);
 				if (rc == -1)
 					goto error;
 				continue;
@@ -919,7 +941,7 @@ error:
 }
 
 static int
-od_config_reader_parse(od_config_reader_t *reader)
+od_config_reader_parse(od_config_reader_t *reader, od_module_t *modules)
 {
 	od_config_t *config = reader->config;
 	for (;;) {
@@ -948,8 +970,11 @@ od_config_reader_parse(od_config_reader_t *reader)
 				char *config_file = NULL;
 				if (!od_config_reader_string(reader, &config_file))
 					return -1;
-				rc = od_config_reader_import(
-				  reader->config, reader->rules, reader->error, config_file);
+				rc = od_config_reader_import(reader->config,
+				                             reader->rules,
+				                             reader->error,
+				                             modules,
+				                             config_file);
 				free(config_file);
 				if (rc == -1)
 					return -1;
@@ -1074,6 +1099,24 @@ od_config_reader_parse(od_config_reader_t *reader)
 				if (!od_config_reader_number(reader, &config->keepalive))
 					return -1;
 				continue;
+			/* keepalive_keep_interval */
+			case OD_LKEEPALIVE_INTERVAL:
+				if (!od_config_reader_number(reader,
+				                             &config->keepalive_keep_interval))
+					return -1;
+				continue;
+			/* keepalive_probes */
+			case OD_LKEEPALIVE_PROBES:
+				if (!od_config_reader_number(reader, &config->keepalive_probes))
+					return -1;
+				continue;
+
+			/* keepalive_usr_timeout */
+			case OD_LKEEPALIVE_USR_TIMEOUT:
+				if (!od_config_reader_number(reader,
+				                             &config->keepalive_usr_timeout))
+					return -1;
+				continue;
 			/* workers */
 			case OD_LWORKERS:
 				if (!od_config_reader_number(reader, &config->workers))
@@ -1129,10 +1172,23 @@ od_config_reader_parse(od_config_reader_t *reader)
 				continue;
 			/* database */
 			case OD_LDATABASE:
-				rc = od_config_reader_database(reader);
+				rc = od_config_reader_database(reader, modules);
 				if (rc == -1)
 					return -1;
 				continue;
+			case OD_LMODULE: {
+				char *module_path = NULL;
+				rc = od_config_reader_string(reader, &module_path);
+				if (rc == -1) {
+					return -1;
+				}
+				if (od_target_module_add(NULL, modules, module_path) ==
+				    OD_MODULE_CB_FAIL_RETCODE) {
+					od_config_reader_error(
+					  reader, &token, "failed to load module");
+				}
+				continue;
+			}
 			default:
 				od_config_reader_error(reader, &token, "unexpected parameter");
 				return -1;
@@ -1146,6 +1202,7 @@ int
 od_config_reader_import(od_config_t *config,
                         od_rules_t *rules,
                         od_error_t *error,
+                        od_module_t *modules,
                         char *config_file)
 {
 	od_config_reader_t reader;
@@ -1157,7 +1214,7 @@ od_config_reader_import(od_config_t *config,
 	rc = od_config_reader_open(&reader, config_file);
 	if (rc == -1)
 		return -1;
-	rc = od_config_reader_parse(&reader);
+	rc = od_config_reader_parse(&reader, modules);
 	od_config_reader_close(&reader);
 
 	if (!config->client_max_routing)
