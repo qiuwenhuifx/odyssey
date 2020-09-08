@@ -36,6 +36,7 @@ enum
 	OD_LDATABASES,
 	OD_LMODULE,
 	OD_LERRORS,
+	OD_LERRORS_PER_ROUTE,
 	OD_LFRONTEND,
 	OD_LROUTER,
 	OD_LVERSION,
@@ -56,6 +57,7 @@ static od_keyword_t od_console_keywords[] = {
 	od_keyword("create", OD_LCREATE),
 	od_keyword("module", OD_LMODULE),
 	od_keyword("errors", OD_LERRORS),
+	od_keyword("errors_per_route", OD_LERRORS_PER_ROUTE),
 	od_keyword("frontend", OD_LFRONTEND),
 	od_keyword("router", OD_LROUTER),
 	od_keyword("drop", OD_LDROP),
@@ -170,18 +172,8 @@ od_console_show_frontend_stats_err_add(machine_msg_t *stream,
 		if (msg == NULL)
 			return NOT_OK_RESPONSE;
 
-		od_list_t *it      = NULL;
 		size_t total_count = od_err_logger_get_aggr_errors_count(
-		  route_pool->err_logger_general, od_frontend_status_errs[i]);
-
-		od_list_foreach(&route_pool->list, it)
-		{
-			od_route_t *route = od_container_of(it, od_route_t, link);
-			if (route && route->extra_logging_enabled) {
-				total_count += od_err_logger_get_aggr_errors_count(
-				  route->frontend_err_logger, od_frontend_status_errs[i]);
-			}
-		}
+		  route_pool->err_logger, od_frontend_status_errs[i]);
 
 		char *err_type = od_frontend_status_to_str(od_frontend_status_errs[i]);
 
@@ -342,6 +334,140 @@ od_console_show_errors(od_client_t *client, machine_msg_t *stream)
 }
 
 static inline int
+od_console_show_errors_per_route_cb(od_route_t *route, void **argv)
+{
+	machine_msg_t *stream = argv[0];
+	assert(stream);
+
+	if (!route || !route->extra_logging_enabled || od_route_is_dynamic(route)) {
+		return OK_RESPONSE;
+	}
+	for (size_t i = 0; i < OD_FRONTEND_STATUS_ERRORS_TYPES_COUNT; ++i) {
+		int offset;
+		int rc;
+		machine_msg_t *msg;
+		msg = kiwi_be_write_data_row(stream, &offset);
+		if (msg == NULL)
+			return NOT_OK_RESPONSE;
+
+		size_t total_count = od_err_logger_get_aggr_errors_count(
+		  route->err_logger, od_frontend_status_errs[i]);
+
+		char *err_type = od_frontend_status_to_str(od_frontend_status_errs[i]);
+
+		rc = kiwi_be_write_data_row_add(
+		  stream, offset, err_type, strlen(err_type));
+		if (rc != OK_RESPONSE) {
+			return rc;
+		}
+
+		/* route user */
+
+		rc = kiwi_be_write_data_row_add(stream,
+		                                offset,
+		                                route->rule->user_name,
+		                                strlen(route->rule->user_name));
+		if (rc != OK_RESPONSE) {
+			return rc;
+		}
+
+		/* route database */
+
+		rc = kiwi_be_write_data_row_add(
+		  stream, offset, route->rule->db_name, strlen(route->rule->db_name));
+		if (rc != OK_RESPONSE) {
+			return rc;
+		}
+
+		/* error_type */
+
+		char data[64];
+		int data_len;
+		data_len = od_snprintf(data, sizeof(data), "%" PRIu64, total_count);
+
+		rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
+		if (rc != OK_RESPONSE) {
+			return rc;
+		}
+	}
+
+	for (size_t i = 0; i < OD_ROUTER_ROUTE_STATUS_ERRORS_TYPES_COUNT; ++i) {
+		int offset;
+		int rc;
+		machine_msg_t *msg;
+		msg = kiwi_be_write_data_row(stream, &offset);
+		if (msg == NULL)
+			return NOT_OK_RESPONSE;
+
+		size_t total_count = od_err_logger_get_aggr_errors_count(
+		  route->err_logger, od_router_route_status_errs[i]);
+
+		char *err_type =
+		  od_router_status_to_str(od_router_route_status_errs[i]);
+
+		rc = kiwi_be_write_data_row_add(
+		  stream, offset, err_type, strlen(err_type));
+		if (rc != OK_RESPONSE) {
+			return rc;
+		}
+
+		/* route user */
+
+		rc = kiwi_be_write_data_row_add(stream,
+		                                offset,
+		                                route->rule->user_name,
+		                                strlen(route->rule->user_name));
+		if (rc != OK_RESPONSE) {
+			return rc;
+		}
+
+		/* route database */
+
+		rc = kiwi_be_write_data_row_add(
+		  stream, offset, route->rule->db_name, strlen(route->rule->db_name));
+		if (rc != OK_RESPONSE) {
+			return rc;
+		}
+
+		/* error_type */
+
+		char data[64];
+		int data_len;
+		data_len = od_snprintf(data, sizeof(data), "%" PRIu64, total_count);
+
+		rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
+		if (rc != OK_RESPONSE) {
+			return rc;
+		}
+	}
+
+	return OK_RESPONSE;
+}
+
+static inline od_retcode_t
+od_console_show_errors_per_route(od_client_t *client, machine_msg_t *stream)
+{
+
+	assert(stream);
+	od_router_t *router = client->global->router;
+
+	void *argv[] = { stream };
+
+	machine_msg_t *msg;
+	msg = kiwi_be_write_row_descriptionf(
+	  stream, "sssl", "error_type", "user", "database", "count");
+
+	if (msg == NULL) {
+		return NOT_OK_RESPONSE;
+	}
+
+	od_router_foreach(router, od_console_show_errors_per_route_cb, argv);
+
+	od_retcode_t rc = kiwi_be_write_complete(stream, "SHOW", 5);
+	return rc;
+}
+
+static inline int
 od_console_show_version(machine_msg_t *stream)
 {
 	assert(stream);
@@ -475,6 +601,14 @@ od_console_show_pools_add_cb(od_route_t *route, void **argv)
 		rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 		if (rc == -1)
 			goto error;
+
+		/* tcp conn rate */
+		data_len =
+		  od_snprintf(data, sizeof(data), "%" PRIu64, route->tcp_connections);
+		rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
+		if (rc == -1)
+			goto error;
+
 		transactions_hgram = td_new(QUANTILES_COMPRESSION);
 		queries_hgram      = td_new(QUANTILES_COMPRESSION);
 		freeze_hgram       = td_new(QUANTILES_COMPRESSION);
@@ -705,6 +839,20 @@ od_console_show_pools(od_client_t *client, machine_msg_t *stream, bool extended)
                                                0,
                                                bytes_sent,
                                                strlen(bytes_sent),
+                                               0,
+                                               0,
+                                               23 /* INT4OID */,
+                                               4,
+                                               0,
+                                               0);
+		if (rc == -1)
+			return -1;
+
+		char *tcp_conn_rate = "tcp_conn_count";
+		rc                  = kiwi_be_write_row_description_add(msg,
+                                               0,
+                                               tcp_conn_rate,
+                                               strlen(tcp_conn_rate),
                                                0,
                                                0,
                                                23 /* INT4OID */,
@@ -1222,6 +1370,8 @@ od_console_show(od_client_t *client, machine_msg_t *stream, od_parser_t *parser)
 			return od_console_show_lists(client, stream);
 		case OD_LERRORS:
 			return od_console_show_errors(client, stream);
+		case OD_LERRORS_PER_ROUTE:
+			return od_console_show_errors_per_route(client, stream);
 		case OD_LVERSION:
 			return od_console_show_version(stream);
 	}

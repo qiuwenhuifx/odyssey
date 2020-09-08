@@ -8,9 +8,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
-#include <ctype.h>
 #include <inttypes.h>
 #include <assert.h>
 
@@ -743,8 +741,23 @@ od_frontend_remote(od_client_t *client)
 	}
 
 	od_server_t *server;
+	od_instance_t *instance = client->global->instance;
 	for (;;) {
-		machine_cond_wait(client->cond, UINT32_MAX);
+		/* we go to the eternal wait
+		 * mode during normal work and set the timeout to the client
+		 * in 1 minute to perform actions in the shutdown mode  */
+		while (1) {
+			if (machine_cond_wait(client->cond, 60000) == 0) {
+				break;
+			}
+			if (instance->shutdown_worker_id != -1) {
+				status = OD_ECLIENT_READ;
+				break;
+			}
+		}
+
+		if (od_frontend_status_is_err(status))
+			break;
 
 		/* client operations */
 		status = od_frontend_ctl(client);
@@ -1276,7 +1289,7 @@ od_frontend(void *arg)
 	/* setup client and run main loop */
 	od_route_t *route = client->route;
 	od_error_logger_t *l;
-	l = router->route_pool.err_logger_general;
+	l = router->route_pool.err_logger;
 
 	od_frontend_status_t status;
 	status = OD_UNDEF;
@@ -1285,6 +1298,11 @@ od_frontend(void *arg)
 			status = od_frontend_local_setup(client);
 			if (od_frontend_status_is_err(status)) {
 				od_error_logger_store_err(l, status);
+
+				if (route->extra_logging_enabled &&
+				    !od_route_is_dynamic(route)) {
+					od_error_logger_store_err(route->err_logger, status);
+				}
 			}
 			if (status != OD_OK)
 				break;
@@ -1292,6 +1310,11 @@ od_frontend(void *arg)
 			status = od_frontend_local(client);
 			if (od_frontend_status_is_err(status)) {
 				od_error_logger_store_err(l, status);
+
+				if (route->extra_logging_enabled &&
+				    !od_route_is_dynamic(route)) {
+					od_error_logger_store_err(route->err_logger, status);
+				}
 			}
 			break;
 		}
@@ -1299,6 +1322,11 @@ od_frontend(void *arg)
 			status = od_frontend_setup(client);
 			if (od_frontend_status_is_err(status)) {
 				od_error_logger_store_err(l, status);
+
+				if (route->extra_logging_enabled &&
+				    !od_route_is_dynamic(route)) {
+					od_error_logger_store_err(route->err_logger, status);
+				}
 			}
 			if (status != OD_OK)
 				break;
@@ -1306,6 +1334,11 @@ od_frontend(void *arg)
 			status = od_frontend_remote(client);
 			if (od_frontend_status_is_err(status)) {
 				od_error_logger_store_err(l, status);
+
+				if (route->extra_logging_enabled &&
+				    !od_route_is_dynamic(route)) {
+					od_error_logger_store_err(route->err_logger, status);
+				}
 			}
 
 			break;
