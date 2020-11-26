@@ -1,6 +1,7 @@
 #ifndef ODYSSEY_WORKER_POOL_H
 #define ODYSSEY_WORKER_POOL_H
 
+#include <macro.h>
 /*
  * Odyssey.
  *
@@ -46,12 +47,6 @@ od_worker_pool_start(od_worker_pool_t *pool, od_global_t *global, int count)
 static inline void
 od_worker_pool_stop(od_worker_pool_t *pool)
 {
-	od_instance_t *instance = pool->pool->global->instance;
-	int is_shared;
-	is_shared = od_config_is_multi_workers(&instance->config);
-	if (!is_shared)
-		return;
-
 	for (int i = 0; i < pool->count; i++) {
 		od_worker_t *worker = &pool->pool[i];
 		machine_stop(worker->machine);
@@ -59,41 +54,23 @@ od_worker_pool_stop(od_worker_pool_t *pool)
 }
 
 static inline void
-od_worker_pool_wait(od_worker_pool_t *pool)
+od_worker_pool_wait()
 {
-	od_instance_t *instance = pool->pool->global->instance;
-	int is_shared;
-	is_shared = od_config_is_multi_workers(&instance->config);
-	if (!is_shared)
-		return;
-
-	// In fact we cannot wait anything here - machines may be in epoll waiting
-	// No new TLS handshakes should be initiated, so, just wait a bit.
 	machine_sleep(1);
-	/*
-	for (int i = 0; i < pool->count; i++) {
-	    od_worker_t *worker = &pool->pool[i];
-	    machine_wait(worker->machine);
-	}
-	*/
 }
 
 static inline void
 od_worker_pool_wait_gracefully_shutdown(od_worker_pool_t *pool)
 {
-	od_instance_t *instance = pool->pool->global->instance;
-	int is_shared;
-	is_shared = od_config_is_multi_workers(&instance->config);
-	if (!is_shared)
-		return;
-
 	//	// In fact we cannot wait anything here - machines may be in epoll
 	// waiting
 	//	// No new TLS handshakes should be initiated, so, just wait a bit.
 	//	machine_sleep(1);
 	for (int i = 0; i < pool->count; i++) {
 		od_worker_t *worker = &pool->pool[i];
-		machine_wait(worker->machine);
+		int rc              = machine_wait(worker->machine);
+		if (rc != MM_OK_RETCODE)
+			return;
 	}
 }
 

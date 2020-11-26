@@ -35,6 +35,7 @@ struct od_config_listen
 	char *tls_protocols;
 	int client_login_timeout;
 	od_list_t link;
+	int compression;
 };
 
 struct od_config
@@ -86,12 +87,6 @@ struct od_config
 	int coroutine_stack_size;
 	od_list_t listen;
 };
-
-static inline int
-od_config_is_multi_workers(od_config_t *config)
-{
-	return config->workers > 1;
-}
 
 void
 od_config_init(od_config_t *);

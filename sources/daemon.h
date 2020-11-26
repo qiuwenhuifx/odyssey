@@ -7,6 +7,10 @@
  * Scalable PostgreSQL connection pooler.
  */
 
+#include <fcntl.h>
+#include <odyssey.h>
+#include <unistd.h>
+
 int
 od_daemonize(void);
 

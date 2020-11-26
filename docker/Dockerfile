@@ -25,7 +25,7 @@ RUN curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - && \
     sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    sudo postgresql postgresql-contrib \
+    sudo postgresql-13 \
     build-essential \
     cmake \
     gcc \
@@ -35,23 +35,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     libpq-dev \
     vim \
-    postgresql-server-dev-12
+    postgresql-common \
+    postgresql-server-dev-13
 
-COPY docker-test/pg_hba-test.conf /etc/postgresql/12/main/pg_hba.conf
+COPY docker/pg_hba-test.conf /etc/postgresql/13/main/pg_hba.conf
 
 RUN mkdir test_dir
 COPY . /test_dir
-COPY docker-test/ody-restart.sh /usr/bin/ody-restart
-COPY docker-test/ody-start.sh /usr/bin/ody-start
+COPY docker/bin/* /usr/bin/
 
-RUN chmod a+x /usr/bin/ody-start /usr/bin/ody-restart && mkdir /tmp/odyssey
+RUN mkdir /tmp/odyssey
 
-RUN cd test_dir && make ODY_DIR=/test_dir BUILD_TARGET_DIR=build local_build && cp build/sources/odyssey /usr/bin/odyssey && mkdir /etc/odyssey
-COPY docker-test/odyssey.conf /etc/odyssey/odyssey.conf
+RUN cd test_dir && make ODY_DIR=/test_dir BUILD_TEST_DIR=build local_build && cp build/sources/odyssey /usr/bin/odyssey && mkdir /etc/odyssey
+COPY docker/odyssey.conf /etc/odyssey/odyssey.conf
+RUN cd test_dir && make ODY_DIR=/test_dir BUILD_TEST_ASAN_DIR=build-asan build_asan && cp build-asan/sources/odyssey /usr/bin/odyssey-asan
 
 COPY --from=base /ody-intergration-test/pkg/ody-intergration-test /ody-intergration-test
+COPY docker/scram /scram
+COPY test/shell-test /shell-test
 
-COPY docker-test/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+
 RUN chmod a+x /usr/local/bin/entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

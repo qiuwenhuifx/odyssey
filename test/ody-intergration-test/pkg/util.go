@@ -20,7 +20,7 @@ const startOdysseyCmd = "/usr/bin/ody-start"
 
 
 func restartPg(ctx context.Context) error {
-	_, err := exec.CommandContext(ctx, pgCtlcluster, "12", "main", "restart").Output()
+	_, err := exec.CommandContext(ctx, pgCtlcluster, "13", "main", "restart").Output()
 	if err != nil {
 		return fmt.Errorf("error due postgresql restarting %w", err)
 	}
@@ -40,6 +40,7 @@ func ensurePostgresqlRunning(ctx context.Context) error {
 }
 
 func ensureOdysseyRunning(ctx context.Context) error {
+	fmt.Printf("ensuring odyssey is OK or not\n")
 	_, err := exec.CommandContext(ctx, startOdysseyCmd).Output()
 	if err != nil {
 		err = fmt.Errorf("error due odyssey restarting %w", err)

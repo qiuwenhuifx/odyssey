@@ -1,8 +1,8 @@
 #ifndef ODYSSEY_STAT_H
 #define ODYSSEY_STAT_H
 
-#include "tdigest.h"
 #include "atomic.h"
+#include "tdigest.h"
 
 /*
  * Odyssey.
@@ -10,7 +10,7 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#define QUANTILES_WINDOW 5
+#define QUANTILES_WINDOW      5
 #define QUANTILES_COMPRESSION 100
 
 typedef struct od_stat_state od_stat_state_t;
@@ -50,6 +50,15 @@ static inline void
 od_stat_init(od_stat_t *stat)
 {
 	memset(stat, 0, sizeof(*stat));
+}
+
+static inline void
+od_stat_free(od_stat_t *stat)
+{
+	for (size_t i = 0; i < QUANTILES_WINDOW; ++i) {
+		td_free(stat->transaction_hgram[i]);
+		td_free(stat->query_hgram[i]);
+	}
 }
 
 static inline void
@@ -137,9 +146,7 @@ od_stat_update_of(od_atomic_u64_t *prev, od_atomic_u64_t *current)
 {
 	/* todo: this could be made more optimal */
 	/* prev <= current */
-	uint64_t diff;
-	diff = od_atomic_u64_of(current) - od_atomic_u64_of(prev);
-	od_atomic_u64_add(prev, diff);
+	__atomic_store(prev, current, __ATOMIC_SEQ_CST);
 }
 
 static inline void

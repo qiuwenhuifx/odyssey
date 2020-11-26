@@ -5,15 +5,10 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <stdlib.h>
-#include <stdarg.h>
-#include <stdint.h>
-#include <string.h>
-#include <inttypes.h>
-#include <assert.h>
+#include "c.h"
 
-#include <machinarium.h>
 #include <kiwi.h>
+#include <machinarium.h>
 #include <odyssey.h>
 
 static inline void
@@ -104,8 +99,6 @@ od_frontend_error_is_too_many_connections(od_client_t *client)
 	return strcmp(error.code, KIWI_TOO_MANY_CONNECTIONS) == 0;
 }
 
-#define MAX_STARTUP_ATTEMPTS 7
-
 static int
 od_frontend_startup(od_client_t *client)
 {
@@ -158,8 +151,13 @@ od_frontend_startup(od_client_t *client)
 	if (rc == -1)
 		return -1;
 
-	if (!client->startup.is_ssl_request)
+	if (!client->startup.is_ssl_request) {
+		rc = od_compression_frontend_setup(
+		  client, client->config_listen, &instance->logger);
+		if (rc == -1)
+			return -1;
 		return 0;
+	}
 
 	/* read startup-cancel message followed after ssl
 	 * negotiation */
@@ -175,6 +173,13 @@ od_frontend_startup(od_client_t *client)
 	machine_msg_free(msg);
 	if (rc == -1)
 		goto error;
+
+	rc = od_compression_frontend_setup(
+	  client, client->config_listen, &instance->logger);
+	if (rc == -1) {
+		return -1;
+	}
+
 	return 0;
 
 error:
@@ -197,8 +202,7 @@ od_frontend_attach(od_client_t *client,
 	bool wait_for_idle = false;
 	for (;;) {
 		od_router_status_t status;
-		status =
-		  od_router_attach(router, &instance->config, client, wait_for_idle);
+		status = od_router_attach(router, client, wait_for_idle);
 		if (status != OD_ROUTER_OK) {
 			if (status == OD_ROUTER_ERROR_TIMEDOUT) {
 				od_error(&instance->logger,
@@ -225,14 +229,16 @@ od_frontend_attach(od_client_t *client,
 		         context,
 		         client,
 		         server,
-		         "attached to %s%.*s",
+		         "client %s attached to %s%.*s",
+		         client->id.id,
 		         server->id.id_prefix,
 		         (int)sizeof(server->id.id),
 		         server->id.id);
 
 		/* connect to server, if necessary */
-		if (server->io.io)
+		if (server->io.io) {
 			return OD_OK;
+		}
 
 		int rc;
 		od_atomic_u32_inc(&router->servers_routing);
@@ -246,8 +252,9 @@ od_frontend_attach(od_client_t *client,
 			                od_frontend_error_is_too_many_connections(client);
 			if (wait_for_idle) {
 				od_router_close(router, client);
-				if (instance->config.server_login_retry)
+				if (instance->config.server_login_retry) {
 					machine_sleep(instance->config.server_login_retry);
+				}
 				continue;
 			}
 			return OD_ESERVER_CONNECT;
@@ -741,17 +748,9 @@ od_frontend_remote(od_client_t *client)
 	}
 
 	od_server_t *server;
-	od_instance_t *instance = client->global->instance;
 	for (;;) {
-		/* we go to the eternal wait
-		 * mode during normal work and set the timeout to the client
-		 * in 1 minute to perform actions in the shutdown mode  */
 		while (1) {
 			if (machine_cond_wait(client->cond, 60000) == 0) {
-				break;
-			}
-			if (instance->shutdown_worker_id != -1) {
-				status = OD_ECLIENT_READ;
 				break;
 			}
 		}
@@ -813,9 +812,8 @@ od_frontend_remote(od_client_t *client)
 			}
 
 			/* push server connection back to route pool */
-			od_router_t *router     = client->global->router;
-			od_instance_t *instance = client->global->instance;
-			od_router_detach(router, &instance->config, client);
+			od_router_t *router = client->global->router;
+			od_router_detach(router, client);
 			server = NULL;
 		} else if (status != OD_OK) {
 			break;
@@ -845,7 +843,8 @@ od_frontend_remote(od_client_t *client)
 static void
 od_frontend_cleanup(od_client_t *client,
                     char *context,
-                    od_frontend_status_t status)
+                    od_frontend_status_t status,
+                    od_error_logger_t *l)
 {
 	od_instance_t *instance = client->global->instance;
 	od_router_t *router     = client->global->router;
@@ -854,6 +853,14 @@ od_frontend_cleanup(od_client_t *client,
 	int rc;
 
 	od_server_t *server = client->server;
+
+	if (od_frontend_status_is_err(status)) {
+		od_error_logger_store_err(l, status);
+
+		if (route->extra_logging_enabled && !od_route_is_dynamic(route)) {
+			od_error_logger_store_err(route->err_logger, status);
+		}
+	}
 
 	switch (status) {
 		case OD_STOP:
@@ -864,7 +871,9 @@ od_frontend_cleanup(od_client_t *client,
 				       context,
 				       client,
 				       server,
-				       "client disconnected");
+				       "client disconnected (route %s.%s)",
+				       route->rule->db_name,
+				       route->rule->user_name);
 			}
 			if (!client->server)
 				break;
@@ -876,7 +885,7 @@ od_frontend_cleanup(od_client_t *client,
 				break;
 			}
 			/* push server to router server pool */
-			od_router_detach(router, &instance->config, client);
+			od_router_detach(router, client);
 			break;
 
 		case OD_EOOM:
@@ -912,6 +921,7 @@ od_frontend_cleanup(od_client_t *client,
 			break;
 
 		case OD_ECLIENT_READ:
+			/*fallthrough*/
 		case OD_ECLIENT_WRITE:
 			/* close client connection and reuse server
 			 * link in case of client errors */
@@ -940,7 +950,7 @@ od_frontend_cleanup(od_client_t *client,
 				break;
 			}
 			/* push server to router server pool */
-			od_router_detach(router, &instance->config, client);
+			od_router_detach(router, client);
 			break;
 
 		case OD_ESERVER_CONNECT:
@@ -1136,7 +1146,7 @@ od_frontend(void *arg)
 
 	/* route client */
 	od_router_status_t router_status;
-	router_status = od_router_route(router, &instance->config, client);
+	router_status = od_router_route(router, client);
 
 	/* routing is over */
 	od_atomic_u32_dec(&router->clients_routing);
@@ -1288,63 +1298,32 @@ od_frontend(void *arg)
 
 	/* setup client and run main loop */
 	od_route_t *route = client->route;
-	od_error_logger_t *l;
-	l = router->route_pool.err_logger;
 
 	od_frontend_status_t status;
 	status = OD_UNDEF;
 	switch (route->rule->storage->storage_type) {
 		case OD_RULE_STORAGE_LOCAL: {
 			status = od_frontend_local_setup(client);
-			if (od_frontend_status_is_err(status)) {
-				od_error_logger_store_err(l, status);
-
-				if (route->extra_logging_enabled &&
-				    !od_route_is_dynamic(route)) {
-					od_error_logger_store_err(route->err_logger, status);
-				}
-			}
 			if (status != OD_OK)
 				break;
 
 			status = od_frontend_local(client);
-			if (od_frontend_status_is_err(status)) {
-				od_error_logger_store_err(l, status);
-
-				if (route->extra_logging_enabled &&
-				    !od_route_is_dynamic(route)) {
-					od_error_logger_store_err(route->err_logger, status);
-				}
-			}
 			break;
 		}
 		case OD_RULE_STORAGE_REMOTE: {
 			status = od_frontend_setup(client);
-			if (od_frontend_status_is_err(status)) {
-				od_error_logger_store_err(l, status);
-
-				if (route->extra_logging_enabled &&
-				    !od_route_is_dynamic(route)) {
-					od_error_logger_store_err(route->err_logger, status);
-				}
-			}
 			if (status != OD_OK)
 				break;
 
 			status = od_frontend_remote(client);
-			if (od_frontend_status_is_err(status)) {
-				od_error_logger_store_err(l, status);
-
-				if (route->extra_logging_enabled &&
-				    !od_route_is_dynamic(route)) {
-					od_error_logger_store_err(route->err_logger, status);
-				}
-			}
 
 			break;
 		}
 	}
-	od_frontend_cleanup(client, "main", status);
+	od_error_logger_t *l;
+	l = router->route_pool.err_logger;
+
+	od_frontend_cleanup(client, "main", status, l);
 
 	od_list_foreach(&modules->link, i)
 	{

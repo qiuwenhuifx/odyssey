@@ -5,19 +5,7 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <stdlib.h>
-#include <stdarg.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-#include <ctype.h>
-#include <inttypes.h>
-#include <assert.h>
-
-#include <machinarium.h>
-#include <kiwi.h>
-#include <odyssey.h>
-#include <math.h>
+#include "console.h"
 
 enum
 {
@@ -208,8 +196,9 @@ od_console_show_router_stats_err_add(machine_msg_t *stream,
 		machine_msg_t *msg;
 
 		msg = kiwi_be_write_data_row(stream, &offset);
-		if (msg == NULL)
+		if (msg == NULL) {
 			return NOT_OK_RESPONSE;
+		}
 
 		char *err_type = od_router_status_to_str(od_router_status_errs[i]);
 
@@ -218,9 +207,10 @@ od_console_show_router_stats_err_add(machine_msg_t *stream,
 		if (rc != OK_RESPONSE) {
 			return rc;
 		}
+
+		/* error_type */
 		char data[64];
 		int data_len;
-		/* error_type */
 		data_len = od_snprintf(data,
 		                       sizeof(data),
 		                       "%" PRIu64,
@@ -313,8 +303,9 @@ od_console_show_errors(od_client_t *client, machine_msg_t *stream)
 	machine_msg_t *msg;
 	msg = kiwi_be_write_row_descriptionf(stream, "sl", "error_type", "count");
 
-	if (msg == NULL)
+	if (msg == NULL) {
 		return NOT_OK_RESPONSE;
+	}
 
 	int rc;
 	rc = od_route_pool_stat_err_router(
@@ -342,13 +333,16 @@ od_console_show_errors_per_route_cb(od_route_t *route, void **argv)
 	if (!route || !route->extra_logging_enabled || od_route_is_dynamic(route)) {
 		return OK_RESPONSE;
 	}
+
 	for (size_t i = 0; i < OD_FRONTEND_STATUS_ERRORS_TYPES_COUNT; ++i) {
 		int offset;
 		int rc;
 		machine_msg_t *msg;
 		msg = kiwi_be_write_data_row(stream, &offset);
-		if (msg == NULL)
+		if (msg == NULL) {
+			/* message was not successfully allocated */
 			return NOT_OK_RESPONSE;
+		}
 
 		size_t total_count = od_err_logger_get_aggr_errors_count(
 		  route->err_logger, od_frontend_status_errs[i]);
@@ -357,6 +351,7 @@ od_console_show_errors_per_route_cb(od_route_t *route, void **argv)
 
 		rc = kiwi_be_write_data_row_add(
 		  stream, offset, err_type, strlen(err_type));
+
 		if (rc != OK_RESPONSE) {
 			return rc;
 		}
@@ -447,7 +442,6 @@ od_console_show_errors_per_route_cb(od_route_t *route, void **argv)
 static inline od_retcode_t
 od_console_show_errors_per_route(od_client_t *client, machine_msg_t *stream)
 {
-
 	assert(stream);
 	od_router_t *router = client->global->router;
 
@@ -677,11 +671,15 @@ od_console_show_databases_add_cb(od_route_t *route, void **argv)
 	od_rule_storage_t *storage = rule->storage;
 
 	char *host = storage->host;
-	if (!host)
+	if (!host) {
 		host = "";
+	}
+
 	rc = kiwi_be_write_data_row_add(stream, offset, host, strlen(host));
-	if (rc == -1)
+	if (rc == -1) {
 		goto error;
+	}
+
 	char data[64];
 	int data_len;
 
@@ -720,8 +718,10 @@ od_console_show_databases_add_cb(od_route_t *route, void **argv)
 		rc = kiwi_be_write_data_row_add(stream, offset, "session", 7);
 	if (rule->pool == OD_RULE_POOL_TRANSACTION)
 		rc = kiwi_be_write_data_row_add(stream, offset, "transaction", 11);
-	if (rc == -1)
+
+	if (rc == -1) {
 		goto error;
+	}
 
 	/* max_connections */
 	data_len = od_snprintf(data, sizeof(data), "%d", rule->client_max);
@@ -736,7 +736,8 @@ od_console_show_databases_add_cb(od_route_t *route, void **argv)
 	                       route->client_pool.count_active +
 	                         route->client_pool.count_pending +
 	                         route->client_pool.count_queue);
-	rc       = kiwi_be_write_data_row_add(stream, offset, data, data_len);
+
+	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 	if (rc == -1)
 		goto error;
 
@@ -1563,6 +1564,7 @@ od_console_query(od_client_t *client,
                  uint32_t query_data_size)
 {
 	od_instance_t *instance = client->global->instance;
+	od_system_t *system     = client->global->system;
 
 	uint32_t query_len;
 	char *query;

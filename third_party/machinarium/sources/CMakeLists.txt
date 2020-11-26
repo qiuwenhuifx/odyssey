@@ -38,10 +38,16 @@ set(machine_src
     write.c
     accept.c
     shutdown.c
-    dns.c)
+    dns.c
+    zpq_stream.c
+    compression.c)
 
 add_library(machine_library_static STATIC ${machine_src})
 set_target_properties(machine_library_static PROPERTIES OUTPUT_NAME ${machine_library})
+
+if (BUILD_COMPRESSION)
+    target_link_libraries(machine_library_static ${compression_libraries})
+endif()
 
 if (BUILD_SHARED)
     add_library(machine_library_shared SHARED ${machine_src})

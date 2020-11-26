@@ -5,24 +5,11 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <stdlib.h>
-#include <stdarg.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-#include <ctype.h>
-#include <inttypes.h>
-#include <assert.h>
+#include "c.h"
 
-#include <signal.h>
-#include <errno.h>
-#include <sys/time.h>
-#include <sys/resource.h>
-
-#include <machinarium.h>
-#include <kiwi.h>
-#include <odyssey.h>
 #include "module.h"
+#include <machinarium.h>
+#include <odyssey.h>
 
 void
 od_instance_init(od_instance_t *instance)
@@ -37,6 +24,7 @@ od_instance_init(od_instance_t *instance)
 	sigemptyset(&mask);
 	sigaddset(&mask, SIGINT);
 	sigaddset(&mask, SIGTERM);
+	sigaddset(&mask, OD_SIG_LOG_ROTATE);
 	sigaddset(&mask, OD_SIG_GRACEFUL_SHUTDOWN);
 	sigaddset(&mask, SIGHUP);
 	sigaddset(&mask, SIGPIPE);
@@ -196,6 +184,7 @@ od_instance_main(od_instance_t *instance, int argc, char **argv)
 			         NULL,
 			         "failed to set process priority: %s",
 			         strerror(errno));
+			goto error;
 		}
 	}
 

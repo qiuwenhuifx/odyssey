@@ -5,17 +5,17 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <stdlib.h>
+#include <assert.h>
+#include <ctype.h>
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
-#include <inttypes.h>
-#include <assert.h>
 
-#include <machinarium.h>
 #include <kiwi.h>
+#include <machinarium.h>
 #include <odyssey.h>
 
 void
@@ -47,6 +47,7 @@ od_config_init(od_config_t *config)
 	config->keepalive                     = 15;
 	config->keepalive_keep_interval       = 5;
 	config->keepalive_probes              = 3;
+	config->keepalive_usr_timeout         = 0; // use sys default
 	config->workers                       = 1;
 	config->resolvers                     = 1;
 	config->client_max_set                = 0;
@@ -211,7 +212,7 @@ od_config_validate(od_config_t *config, od_logger_t *logger)
 	}
 
 	if (config->enable_online_restart_feature && !config->bindwith_reuseport) {
-		od_dbg_printf_on_dvl_lvl(1, "validation error detected\n", "");
+		od_dbg_printf_on_dvl_lvl(1, "validation error detected %s\n", "");
 		od_error(logger,
 		         "config",
 		         NULL,

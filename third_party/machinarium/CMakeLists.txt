@@ -1,6 +1,7 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.12)
 
 project(machinarium C)
+set(CLANGCOMPILERSTANDART gnu11)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH}
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
@@ -13,9 +14,9 @@ if ("${CMAKE_BUILD_TYPE}" STREQUAL "")
 endif()
 
 if ("${CMAKE_BUILD_TYPE}" STREQUAL "Release")
-    set(CMAKE_C_FLAGS "-std=gnu99 -fPIC -g -O2 -D_GNU_SOURCE -pthread")
+    set(CMAKE_C_FLAGS "-std=${CLANGCOMPILERSTANDART} -fPIC -g -O2 -D_GNU_SOURCE -pthread -pedantic ")
 elseif("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
-    set(CMAKE_C_FLAGS "-std=gnu99 -fPIC -g -O0 -D_GNU_SOURCE -pthread")
+    set(CMAKE_C_FLAGS "-std=${CLANGCOMPILERSTANDART} -fPIC -g -O0 -D_GNU_SOURCE -pthread -pedantic ")
 endif()
 
 include_directories("${PROJECT_SOURCE_DIR}/sources")
@@ -34,6 +35,27 @@ if (BUILD_VALGRIND)
     if (${VALGRIND_INCLUDE_PATH} STREQUAL "VALGRIND_INCLUDE_PATH-NOTFOUND")
     else()
         set(HAVE_VALGRIND 1)
+    endif()
+endif()
+
+set(compression_libraries "")
+if (BUILD_COMPRESSION)
+    add_definitions(-DMM_BUILD_COMPRESSION)
+
+    # use zstd
+    find_package(Zstd)
+    if(ZSTD_FOUND)
+        include_directories(${ZSTD_INCLUDE_DIR})
+        set(compression_libraries ${compression_libraries} ${ZSTD_LIBRARY})
+        add_definitions(-DMM_HAVE_ZSTD)
+    endif()
+
+    # use zlib
+    find_package(ZLIB)
+    if(ZLIB_FOUND)
+        include_directories(${ZLIB_INCLUDE_DIRS})
+        set(compression_libraries ${compression_libraries} ${ZLIB_LIBRARIES})
+        add_definitions(-DMM_HAVE_ZLIB)
     endif()
 endif()
 
@@ -65,4 +87,11 @@ message(STATUS "BORINGSSL_INCLUDE_DIR: ${BORINGSSL_INCLUDE_DIR}")
 message(STATUS "OPENSSL_VERSION:       ${OPENSSL_VERSION}")
 message(STATUS "OPENSSL_ROOT_DIR:      ${OPENSSL_ROOT_DIR}")
 message(STATUS "OPENSSL_INCLUDE_DIR:   ${OPENSSL_INCLUDE_DIR}")
+message(STATUS "BUILD_COMPRESSION:     ${BUILD_COMPRESSION}")
+if (BUILD_COMPRESSION)
+    message(STATUS "ZSTD_INCLUDE_DIR:      ${ZSTD_INCLUDE_DIR}")
+    message(STATUS "ZSTD_LIBRARY:          ${ZSTD_LIBRARY}")
+    message(STATUS "ZLIB_INCLUDE_DIRS:     ${ZLIB_INCLUDE_DIRS}")
+    message(STATUS "ZLIB_LIBRARIES:        ${ZLIB_LIBRARIES}")
+endif()
 message(STATUS "")

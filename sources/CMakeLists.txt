@@ -18,7 +18,6 @@ set(od_src
     attribute.c
     auth_query.c
     auth.c
-    scram.c
     cancel.c
     console.c
     deploy.c
@@ -37,10 +36,15 @@ set(od_src
     restart_sync.c
     grac_shutdown_worker.c
     sighandler.c
-    watchdog.c)
+    watchdog.c
+    compression.c)
 
 if (PAM_FOUND)
    list(APPEND od_src pam.c)
+endif()
+
+if (true)
+    list(APPEND od_src scram.c)
 endif()
 
 include_directories("${PROJECT_SOURCE_DIR}/")
@@ -57,3 +61,7 @@ if(THREADS_HAVE_PTHREAD_ARG)
 endif()
 
 target_link_libraries(${od_binary} ${od_libraries} ${CMAKE_THREAD_LIBS_INIT} m)
+
+if (BUILD_COMPRESSION)
+    target_link_libraries(${od_binary} ${compression_libraries})
+endif()

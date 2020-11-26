@@ -13,6 +13,11 @@ Odyssey is production-ready, it is being used in large production setups. We app
 
 <a href="https://travis-ci.org/yandex/odyssey"><img src="https://travis-ci.org/yandex/odyssey.svg?branch=master" /></a>
 
+<a href="https://scan.coverity.com/projects/yandex-odyssey">
+  <img alt="Coverity Scan Build Status"
+       src="https://scan.coverity.com/projects/20374/badge.svg"/>
+</a>
+
 ### Design goals and main features
 
 #### Multi-threaded processing
@@ -69,17 +74,14 @@ Currently Odyssey runs only on Linux. Supported platforms are x86/x86_64.
 
 To build you will need:
 
-* cmake >= 2.8
+* cmake >= 3.12.4
 * gcc >= 4.6
 * openssl
-* postgresql-server-dev-10
+* postgresql-server-dev-13
 
 ```sh
 git clone git://github.com/yandex/odyssey.git
-cd odyssey
-mkdir build
-cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
+make local_build
 make
 ```
 

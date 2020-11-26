@@ -5,19 +5,12 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <stdlib.h>
-#include <stdarg.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-#include <ctype.h>
-#include <inttypes.h>
 #include <assert.h>
 
-#include <machinarium.h>
 #include <kiwi.h>
-#include <odyssey.h>
+#include <machinarium.h>
 #include <misc.h>
+#include <odyssey.h>
 
 void
 od_router_init(od_router_t *router)
@@ -40,7 +33,6 @@ od_router_free(od_router_t *router)
 	od_rules_free(&router->rules);
 	pthread_mutex_destroy(&router->lock);
 	od_err_logger_free(router->router_err_logger);
-	od_err_logger_free(router->route_pool.err_logger);
 }
 
 inline int
@@ -211,18 +203,16 @@ od_router_gc(od_router_t *router)
 void
 od_router_stat(od_router_t *router,
                uint64_t prev_time_us,
-               int prev_update,
                od_route_pool_stat_cb_t callback,
                void **argv)
 {
 	od_router_lock(router);
-	od_route_pool_stat(
-	  &router->route_pool, prev_time_us, prev_update, callback, argv);
+	od_route_pool_stat(&router->route_pool, prev_time_us, callback, argv);
 	od_router_unlock(router);
 }
 
 od_router_status_t
-od_router_route(od_router_t *router, od_config_t *config, od_client_t *client)
+od_router_route(od_router_t *router, od_client_t *client)
 {
 	kiwi_be_startup_t *startup = &client->startup;
 
@@ -269,9 +259,7 @@ od_router_route(od_router_t *router, od_config_t *config, od_client_t *client)
 	od_route_t *route;
 	route = od_route_pool_match(&router->route_pool, &id, rule);
 	if (route == NULL) {
-		int is_shared;
-		is_shared = od_config_is_multi_workers(config);
-		route = od_route_pool_new(&router->route_pool, is_shared, &id, rule);
+		route = od_route_pool_new(&router->route_pool, &id, rule);
 		if (route == NULL) {
 			od_router_unlock(router);
 			return OD_ROUTER_ERROR;
@@ -329,11 +317,32 @@ od_router_unroute(od_router_t *router, od_client_t *client)
 	od_route_unlock(route);
 }
 
+bool
+od_should_not_spun_connection_yet(int connections_in_pool,
+                                  int pool_size,
+                                  int currently_routing,
+                                  int max_routing)
+{
+	if (pool_size == 0)
+		return currently_routing >= max_routing;
+	/*
+	 * This routine controls ramping of server connections.
+	 * When we have a lot of server connections we try to avoid opening new
+	 * in parallel. Meanwhile when we have no server connections we go at
+	 * maximum configured parallelism.
+	 *
+	 * This equation means that we gradualy reduce parallelism until we reach
+	 * half of possible connections in the pool.
+	 */
+	max_routing =
+	  max_routing * (pool_size - connections_in_pool * 2) / pool_size;
+	if (max_routing <= 0)
+		max_routing = 1;
+	return currently_routing >= max_routing;
+}
+
 od_router_status_t
-od_router_attach(od_router_t *router,
-                 od_config_t *config,
-                 od_client_t *client,
-                 bool wait_for_idle)
+od_router_attach(od_router_t *router, od_client_t *client, bool wait_for_idle)
 {
 	(void)router;
 	od_route_t *route = client->route;
@@ -364,11 +373,17 @@ od_router_attach(od_router_t *router,
 		} else {
 			/* Maybe start new connection, if pool_size is zero */
 			/* Maybe start new connection, if we still have capacity for it */
-			if (route->rule->pool_size == 0 ||
-			    od_server_pool_total(&route->server_pool) <
-			      route->rule->pool_size) {
-				if (od_atomic_u32_of(&router->servers_routing) >=
-				    (uint32_t)route->rule->storage->server_max_routing) {
+			int connections_in_pool = od_server_pool_total(&route->server_pool);
+			int pool_size           = route->rule->pool_size;
+			uint32_t currently_routing =
+			  od_atomic_u32_of(&router->servers_routing);
+			uint32_t max_routing =
+			  (uint32_t)route->rule->storage->server_max_routing;
+			if (pool_size == 0 || connections_in_pool < pool_size) {
+				if (od_should_not_spun_connection_yet(connections_in_pool,
+				                                      pool_size,
+				                                      (int)currently_routing,
+				                                      (int)max_routing)) {
 					// concurrent server connection in progress.
 					od_route_unlock(route);
 					machine_sleep(busyloop_sleep);
@@ -435,8 +450,9 @@ attach:
 	od_route_unlock(route);
 
 	/* attach server io to clients machine context */
-	if (server->io.io && od_config_is_multi_workers(config))
+	if (server->io.io) {
 		od_io_attach(&server->io);
+	}
 
 	/* maybe restore read events subscription */
 	if (restart_read)
@@ -446,7 +462,7 @@ attach:
 }
 
 void
-od_router_detach(od_router_t *router, od_config_t *config, od_client_t *client)
+od_router_detach(od_router_t *router, od_client_t *client)
 {
 	(void)router;
 	od_route_t *route = client->route;
@@ -454,8 +470,7 @@ od_router_detach(od_router_t *router, od_config_t *config, od_client_t *client)
 
 	/* detach from current machine event loop */
 	od_server_t *server = client->server;
-	if (od_config_is_multi_workers(config))
-		od_io_detach(&server->io);
+	od_io_detach(&server->io);
 
 	od_route_lock(route);
 

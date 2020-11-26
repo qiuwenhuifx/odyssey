@@ -5,18 +5,18 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <stdlib.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <ctype.h>
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
-#include <inttypes.h>
-#include <assert.h>
-#include <arpa/inet.h>
 
-#include <machinarium.h>
 #include <kiwi.h>
+#include <machinarium.h>
 #include <odyssey.h>
 
 void
@@ -29,8 +29,6 @@ od_backend_close(od_server_t *server)
 	server->idle_time      = 0;
 	kiwi_key_init(&server->key);
 	kiwi_key_init(&server->key_client);
-	od_relay_free(&server->relay);
-	od_io_free(&server->io);
 	od_server_free(server);
 }
 
@@ -68,6 +66,7 @@ od_backend_error(od_server_t *server, char *context, char *data, uint32_t size)
 {
 	od_instance_t *instance = server->global->instance;
 	kiwi_fe_error_t error;
+
 	int rc;
 	rc = kiwi_fe_read_error(data, size, &error);
 	if (rc == -1) {
@@ -78,6 +77,7 @@ od_backend_error(od_server_t *server, char *context, char *data, uint32_t size)
 		         "failed to parse error message from server");
 		return;
 	}
+
 	od_error(&instance->logger,
 	         context,
 	         server->client,
@@ -86,6 +86,7 @@ od_backend_error(od_server_t *server, char *context, char *data, uint32_t size)
 	         error.severity,
 	         error.code,
 	         error.message);
+
 	if (error.detail) {
 		od_error(&instance->logger,
 		         context,
@@ -94,6 +95,7 @@ od_backend_error(od_server_t *server, char *context, char *data, uint32_t size)
 		         "DETAIL: %s",
 		         error.detail);
 	}
+
 	if (error.hint) {
 		od_error(&instance->logger,
 		         context,
@@ -177,12 +179,13 @@ od_backend_startup(od_server_t *server, kiwi_params_t *route_params)
 			         od_io_error(&server->io));
 			return -1;
 		}
+
 		kiwi_be_type_t type = *(char *)machine_msg_data(msg);
 		od_debug(&instance->logger,
 		         "startup",
 		         NULL,
 		         server,
-		         "%s",
+		         "received packet type: %s",
 		         kiwi_be_type_to_string(type));
 
 		switch (type) {
@@ -267,6 +270,7 @@ od_backend_startup(od_server_t *server, kiwi_params_t *route_params)
 				return -1;
 		}
 	}
+	od_unreachable();
 	return 0;
 }
 
@@ -286,13 +290,15 @@ od_backend_connect_to(od_server_t *server,
 
 	/* set network options */
 	machine_set_nodelay(io, instance->config.nodelay);
-	if (instance->config.keepalive > 0)
+	if (instance->config.keepalive > 0) {
 		machine_set_keepalive(io,
 		                      1,
 		                      instance->config.keepalive,
 		                      instance->config.keepalive_keep_interval,
 		                      instance->config.keepalive_probes,
 		                      instance->config.keepalive_usr_timeout);
+	}
+
 	int rc;
 	rc = od_io_prepare(&server->io, io, instance->config.readahead);
 	if (rc == -1) {
@@ -376,8 +382,9 @@ od_backend_connect_to(od_server_t *server,
 	}
 
 	uint64_t time_resolve = 0;
-	if (instance->config.log_session)
+	if (instance->config.log_session) {
 		time_resolve = machine_time_us() - time_connect_start;
+	}
 
 	/* connect to server */
 	rc = machine_connect(server->io.io, saddr, UINT32_MAX);
@@ -411,8 +418,9 @@ od_backend_connect_to(od_server_t *server,
 	}
 
 	uint64_t time_connect = 0;
-	if (instance->config.log_session)
+	if (instance->config.log_session) {
 		time_connect = machine_time_us() - time_connect_start;
+	}
 
 	/* log server connection */
 	if (instance->config.log_session) {
@@ -481,6 +489,7 @@ od_backend_connect_cancel(od_server_t *server,
 	msg = kiwi_fe_write_cancel(NULL, key->key_pid, key->key);
 	if (msg == NULL)
 		return -1;
+
 	rc = od_write(&server->io, msg);
 	if (rc == -1) {
 		od_error(&instance->logger,
@@ -491,6 +500,7 @@ od_backend_connect_cancel(od_server_t *server,
 		         od_io_error(&server->io));
 		return -1;
 	}
+
 	return 0;
 }
 
@@ -508,6 +518,7 @@ od_backend_update_parameter(od_server_t *server,
 	uint32_t name_len;
 	char *value;
 	uint32_t value_len;
+
 	int rc;
 	rc =
 	  kiwi_fe_read_parameter(data, size, &name, &name_len, &value, &value_len);
@@ -531,11 +542,13 @@ od_backend_update_parameter(od_server_t *server,
 	         value_len,
 	         value);
 
-	if (server_only)
+	if (server_only) {
 		kiwi_vars_update(&server->vars, name, name_len, value, value_len);
-	else
+	} else {
 		kiwi_vars_update_both(
 		  &client->vars, &server->vars, name, name_len, value, value_len);
+	}
+
 	return 0;
 }
 
@@ -589,12 +602,12 @@ od_backend_ready_wait(od_server_t *server,
 			ready++;
 			if (ready == count) {
 				machine_msg_free(msg);
-				break;
+				return 0;
 			}
 		}
 		machine_msg_free(msg);
 	}
-	return 0;
+	/* never reached */
 }
 
 int
@@ -608,8 +621,10 @@ od_backend_query(od_server_t *server,
 
 	machine_msg_t *msg;
 	msg = kiwi_fe_write_query(NULL, query, len);
-	if (msg == NULL)
+	if (msg == NULL) {
 		return -1;
+	}
+
 	int rc;
 	rc = od_write(&server->io, msg);
 	if (rc == -1) {

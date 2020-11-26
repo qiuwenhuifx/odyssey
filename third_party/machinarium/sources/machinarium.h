@@ -12,22 +12,23 @@ extern "C"
 {
 #endif
 
-#include <stdlib.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <limits.h>
+#include <stdlib.h>
 
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <netdb.h>
-#include <errno.h>
 #include "bind.h"
+#include "zpq_stream.h"
+#include <errno.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/un.h>
 
 #if __GNUC__ >= 4
-#define MACHINE_API __attribute__((visibility("default")))
+#	define MACHINE_API __attribute__((visibility("default")))
 #else
-#define MACHINE_API
+#	define MACHINE_API
 #endif
 
 	typedef void (*machine_coroutine_t)(void *arg);
@@ -144,7 +145,7 @@ extern "C"
 
 	/* channel */
 
-	MACHINE_API machine_channel_t *machine_channel_create(int shared);
+	MACHINE_API machine_channel_t *machine_channel_create();
 
 	MACHINE_API void machine_channel_free(machine_channel_t *);
 
@@ -198,6 +199,7 @@ extern "C"
 	                                      int usr_timeout);
 
 	MACHINE_API int machine_set_tls(machine_io_t *, machine_tls_t *, uint32_t);
+	MACHINE_API int machine_set_compression(machine_io_t *, char algorithm);
 
 	MACHINE_API int machine_io_verify(machine_io_t *, char *common_name);
 
@@ -273,7 +275,10 @@ extern "C"
 
 	MACHINE_API int machine_write_stop(machine_io_t *);
 
-	MACHINE_API ssize_t machine_write_raw(machine_io_t *, void *, size_t);
+	MACHINE_API ssize_t machine_write_raw(machine_io_t *,
+	                                      void *,
+	                                      size_t,
+	                                      size_t *);
 
 	MACHINE_API ssize_t machine_writev_raw(machine_io_t *, machine_iov_t *);
 
@@ -283,6 +288,10 @@ extern "C"
 
 	/* lrand48 */
 	MACHINE_API long int machine_lrand48(void);
+
+	/* compression */
+	MACHINE_API char machine_compression_choose_alg(
+	  char *client_compression_algorithms);
 
 #ifdef __cplusplus
 }

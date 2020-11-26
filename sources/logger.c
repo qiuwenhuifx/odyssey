@@ -5,25 +5,14 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <stdlib.h>
-#include <stdarg.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-#include <ctype.h>
-#include <inttypes.h>
-#include <assert.h>
-
-#include <unistd.h>
 #include <fcntl.h>
-#include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/time.h>
-#include <time.h>
 #include <syslog.h>
+#include <time.h>
+#include <unistd.h>
 
 #include <machinarium.h>
-#include <kiwi.h>
 #include <odyssey.h>
 
 typedef struct
@@ -71,6 +60,18 @@ od_logger_open(od_logger_t *logger, char *path)
 	if (logger->fd == -1)
 		return -1;
 	return 0;
+}
+
+int
+od_logger_reopen(od_logger_t *logger, char *path)
+{
+	int old_fd = logger->fd;
+	int rc     = od_logger_open(logger, path);
+	if (rc == -1)
+		logger->fd = old_fd;
+	else if (old_fd != -1)
+		close(old_fd);
+	return rc;
 }
 
 int

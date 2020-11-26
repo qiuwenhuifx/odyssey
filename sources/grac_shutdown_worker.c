@@ -1,21 +1,5 @@
-#include <stdlib.h>
-#include <stdarg.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-#include <ctype.h>
-#include <inttypes.h>
-#include <assert.h>
 
-#include <unistd.h>
-#include <signal.h>
-#include <sys/stat.h>
-#include <errno.h>
-
-#include <machinarium.h>
-#include <kiwi.h>
-#include <odyssey.h>
-#include <sys/prctl.h>
+#include "grac_shutdown_worker.h"
 
 static inline int
 od_system_server_complete_stop(od_system_server_t *server)
@@ -32,7 +16,6 @@ od_system_server_complete_stop(od_system_server_t *server)
 void
 od_grac_shutdown_worker(void *arg)
 {
-
 	od_system_t *system     = arg;
 	od_instance_t *instance = system->global->instance;
 	od_log(&instance->logger,
@@ -56,13 +39,18 @@ od_grac_shutdown_worker(void *arg)
 		server->closed = true;
 	}
 
-	od_dbg_printf_on_dvl_lvl(1, "servers closed\n", 0);
+	od_dbg_printf_on_dvl_lvl(1, "servers closed, errors: %d\n", 0);
 
 	/* wait for all servers to complete old transations */
 	od_list_foreach(&router->servers, i)
 	{
+#if OD_DEVEL_LVL != -1
 		od_system_server_t *server;
 		server = od_container_of(i, od_system_server_t, link);
+#else
+		od_attribute_unused() od_system_server_t *server;
+		server = od_container_of(i, od_system_server_t, link);
+#endif
 
 		while (od_atomic_u32_of(&router->clients_routing) ||
 		       od_atomic_u32_of(&router->clients)) {
@@ -73,7 +61,7 @@ od_grac_shutdown_worker(void *arg)
 		od_dbg_printf_on_dvl_lvl(1, "server shutdown ok %s\n", server->sid.id);
 	}
 
-	od_dbg_printf_on_dvl_lvl(1, "shutting down sockets\n", "");
+	od_dbg_printf_on_dvl_lvl(1, "shutting down sockets %s\n", "");
 
 	/* close sockets */
 	od_list_foreach(&router->servers, i)

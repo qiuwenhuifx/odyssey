@@ -7,8 +7,8 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include "scram.h"
 #include "global.h"
+#include "scram.h"
 #include "stat.h"
 
 typedef struct od_server od_server_t;
@@ -89,8 +89,11 @@ od_server_allocate(void)
 static inline void
 od_server_free(od_server_t *server)
 {
-	if (server->is_allocated)
+	if (server->is_allocated) {
+		od_relay_free(&server->relay);
+		od_io_free(&server->io);
 		free(server);
+	}
 }
 
 static inline void
@@ -103,7 +106,6 @@ static inline void
 od_server_sync_reply(od_server_t *server)
 {
 	server->sync_reply++;
-	;
 }
 
 static inline int

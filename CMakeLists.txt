@@ -1,9 +1,12 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.12)
 
 project(odyssey C)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH}
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+
+
+set(CLANGCOMPILERSTANDART gnu11)
 
 execute_process(COMMAND git describe --always
                 OUTPUT_VARIABLE OD_VERSION_GIT
@@ -31,22 +34,29 @@ else()
     add_definitions(-DOD_VERSION_GIT="${OD_VERSION_GIT}")
 endif()
 
-set(OD_DEVEL_LVL 0)
+execute_process(COMMAND ${CMAKE_C_COMPILER} --version
+        OUTPUT_VARIABLE OD_COMPILER_VERSION
+        RESULT_VARIABLE OD_COMPILER_VERSION_RESULT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+
+
+set(OD_DEVEL_LVL -1)
 
 if ("${CMAKE_BUILD_TYPE}" STREQUAL "")
     set(CMAKE_BUILD_TYPE "Debug")
     set(OD_DEVEL_LVL 1)
 endif()
 if ("${CMAKE_BUILD_TYPE}" STREQUAL "Release")
-    set(CMAKE_C_FLAGS "-std=gnu99 -pedantic -Wall -Wextra -Wstrict-aliasing -g -O2 -pthread")
+    set(CMAKE_C_FLAGS "-std=${CLANGCOMPILERSTANDART} -pedantic -Wall -Wextra -Wstrict-aliasing -g -O2 -pthread")
     set(OD_DEVEL_LVL -1)
 elseif("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
-    set(CMAKE_C_FLAGS "-std=gnu99 -pedantic -Wall -Wextra -Wstrict-aliasing -g -O0 -pthread")
+    set(CMAKE_C_FLAGS "-std=${CLANGCOMPILERSTANDART} -pedantic -Wall -Wextra -Wstrict-aliasing -g -O0 -pthread")
     set(OD_DEVEL_LVL 1)
 elseif("${CMAKE_BUILD_TYPE}" STREQUAL "ASAN")
-    set(CMAKE_C_FLAGS "-std=gnu99 -g -fsanitize=address,undefined -fno-sanitize-recover=all -pedantic -Wall -Wextra -Wstrict-aliasing -g -O0 -pthread")
+    set(CMAKE_C_FLAGS "-std=${CLANGCOMPILERSTANDART} -g -fsanitize=address,undefined -fno-sanitize-recover=all -pedantic -Wall -Wextra -Wstrict-aliasing -g -O0 -pthread")
 elseif("${CMAKE_BUILD_TYPE}" STREQUAL "TSAN")
-    set(CMAKE_C_FLAGS "-std=gnu99 -g -fsanitize=thread -fno-sanitize-recover=all -pedantic -Wall -Wextra -Wstrict-aliasing -g -O0 -pthread")
+    set(CMAKE_C_FLAGS "-std=${CLANGCOMPILERSTANDART} -g -fsanitize=thread -fno-sanitize-recover=all -pedantic -Wall -Wextra -Wstrict-aliasing -g -O0 -pthread")
 endif()
 
 string(TOLOWER ${CMAKE_BUILD_TYPE} OD_VERSION_BUILD)
@@ -92,6 +102,27 @@ if (PAM_FOUND)
     include_directories(${PAM_INCLUDE_DIR})
 endif()
 
+option(BUILD_COMPRESSION "Build with compression support" OFF)
+if(BUILD_COMPRESSION)
+    set(compression_libraries "")
+    add_definitions(-DMM_BUILD_COMPRESSION)
+    # use zstd
+    find_package(Zstd)
+    if(ZSTD_FOUND)
+        include_directories(${ZSTD_INCLUDE_DIR})
+        set(compression_libraries ${compression_libraries} ${ZSTD_LIBRARY})
+        add_definitions(-DMM_HAVE_ZSTD)
+    endif()
+
+    # use zlib
+    find_package(ZLIB)
+    if(ZLIB_FOUND)
+        include_directories(${ZLIB_INCLUDE_DIRS})
+        set(compression_libraries ${compression_libraries} ${ZLIB_LIBRARIES})
+        add_definitions(-DMM_HAVE_ZLIB)
+    endif()
+endif()
+
 # machinarium
 include(BuildMachinarium)
 build_machinarium()
@@ -110,6 +141,9 @@ set(od_libraries ${od_libraries} ${od_pam})
 message(STATUS "")
 message(STATUS "Odyssey (version: ${OD_VERSION_NUMBER}-${OD_VERSION_GIT}-${OD_VERSION_BUILD})")
 message(STATUS "")
+message(STATUS "using compiler          ${CMAKE_C_COMPILER} version 
+${OD_COMPILER_VERSION}")
+message(STATUS "                                                                          ")
 message(STATUS "CMAKE_BUILD_TYPE:       ${CMAKE_BUILD_TYPE}")
 message(STATUS "BUILD_DEBIAN:           ${BUILD_DEBIAN}")
 message(STATUS "POSTGRESQL_INCLUDE_DIR: ${POSTGRESQL_INCLUDE_DIR}")
@@ -125,6 +159,13 @@ message(STATUS "OPENSSL_ROOT_DIR:       ${OPENSSL_ROOT_DIR}")
 message(STATUS "OPENSSL_INCLUDE_DIR:    ${OPENSSL_INCLUDE_DIR}")
 message(STATUS "PAM_LIBRARY:            ${PAM_LIBRARY}")
 message(STATUS "PAM_INCLUDE_DIR:        ${PAM_INCLUDE_DIR}")
+message(STATUS "BUILD_COMPRESSION:      ${BUILD_COMPRESSION}")
+if (BUILD_COMPRESSION)
+    message(STATUS "ZSTD_INCLUDE_DIR:       ${ZSTD_INCLUDE_DIR}")
+    message(STATUS "ZSTD_LIBRARY:           ${ZSTD_LIBRARY}")
+    message(STATUS "ZLIB_INCLUDE_DIRS:      ${ZLIB_INCLUDE_DIRS}")
+    message(STATUS "ZLIB_LIBRARIES:         ${ZLIB_LIBRARIES}")
+endif()
 message(STATUS "")
 
 add_subdirectory(sources)

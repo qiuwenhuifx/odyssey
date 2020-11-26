@@ -77,14 +77,6 @@ file(COPY machinarium/client.key DESTINATION machinarium)
 file(COPY machinarium/server.crt DESTINATION machinarium)
 file(COPY machinarium/server.key DESTINATION machinarium)
 
-file(COPY odyssey/config DESTINATION odyssey)
-file(COPY odyssey/environment.sh DESTINATION odyssey)
-file(COPY odyssey/setup.sh DESTINATION odyssey)
-file(COPY odyssey/stop_pg.sh DESTINATION odyssey)
-file(COPY odyssey/teardown.sh DESTINATION odyssey)
-file(COPY odyssey/test_scram_backend.sh DESTINATION odyssey)
-file(COPY odyssey/test_scram_frontend.sh DESTINATION odyssey)
-
 include_directories("${PROJECT_SOURCE_DIR}/")
 include_directories("${PROJECT_SOURCE_DIR}/sources/")
 include_directories("${PROJECT_BINARY_DIR}/")
@@ -100,3 +92,7 @@ if(THREADS_HAVE_PTHREAD_ARG)
 endif()
 
 target_link_libraries(${od_test_binary} ${od_libraries} ${CMAKE_THREAD_LIBS_INIT} m)
+
+if (BUILD_COMPRESSION)
+    target_link_libraries(${od_test_binary} ${compression_libraries})
+endif()
