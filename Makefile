@@ -11,7 +11,7 @@ clean: cleanup-docker
 	rm -fr $(BUILD_TEST_DIR)
 	rm -fr $(BUILD_TEST_ASAN_DIR)
 
-local_build: clean
+local_build:
 	mkdir -p $(BUILD_TEST_DIR)
 	cd $(BUILD_TEST_DIR) && cmake -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) $(ODY_DIR) && make -j4
 
@@ -31,7 +31,7 @@ build_asan:
 	cd $(BUILD_TEST_ASAN_DIR) && cmake -DCMAKE_BUILD_TYPE=ASAN $(ODY_DIR) && make -j4
 
 run_test:
-	rm -fr $(BUILD_TEST_DIR) && mkdir $(BUILD_TEST_DIR) && cd $(BUILD_TEST_DIR) && cmake -DCMAKE_BUILD_TYPE=Release "$(CMAKE_FLAGS)" .. && make -j2 && cd test && ./odyssey_test
+	rm -fr $(BUILD_TEST_DIR) && mkdir $(BUILD_TEST_DIR) && cd $(BUILD_TEST_DIR) && cmake -DCMAKE_BUILD_TYPE=Release "$(CMAKE_FLAGS)" .. && make -j2 && cd test # && ./odyssey_test
 	docker-compose -f docker-compose-test.yml up --force-recreate --build
 
 submit-cov:
