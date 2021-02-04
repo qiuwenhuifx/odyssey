@@ -37,13 +37,15 @@ set(od_src
     grac_shutdown_worker.c
     sighandler.c
     watchdog.c
+    ejection.c
+    thread_global.c
     compression.c)
 
 if (PAM_FOUND)
    list(APPEND od_src pam.c)
 endif()
 
-if (true)
+if (USE_SCRAM)
     list(APPEND od_src scram.c)
 endif()
 

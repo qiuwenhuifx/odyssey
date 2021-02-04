@@ -27,6 +27,7 @@ set(PG_VERSION_NUM "130000")
 execute_process (
         COMMAND pg_config --libdir
         OUTPUT_VARIABLE PG_LIBDIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
 execute_process (
@@ -50,9 +51,10 @@ find_library(
 find_library(
     PQ_LIBRARY
     NAMES libpq.a
+    HINTS ${PG_LIBDIR}
 )
 
 find_package_handle_standard_args(
-    POSTGRESQL
+    PostgreSQL
     REQUIRED_VARS POSTGRESQL_LIBRARY PQ_LIBRARY POSTGRESQL_INCLUDE_DIR
 )

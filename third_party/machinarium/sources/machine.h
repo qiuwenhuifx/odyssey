@@ -9,14 +9,14 @@
 
 typedef struct mm_machine mm_machine_t;
 
-struct mm_machine
-{
+struct mm_machine {
 	volatile int online;
 	uint64_t id;
 	char *name;
 	machine_coroutine_t main;
 	void *main_arg;
 	mm_thread_t thread;
+	void *thread_global_private;
 	mm_scheduler_t scheduler;
 	mm_signalmgr_t signal_mgr;
 	mm_eventmgr_t event_mgr;
@@ -30,14 +30,12 @@ struct mm_machine
 
 extern __thread mm_machine_t *mm_self;
 
-static inline void
-mm_errno_set(int value)
+static inline void mm_errno_set(int value)
 {
 	mm_scheduler_current(&mm_self->scheduler)->errno_ = value;
 }
 
-static inline int
-mm_errno_get(void)
+static inline int mm_errno_get(void)
 {
 	return mm_scheduler_current(&mm_self->scheduler)->errno_;
 }

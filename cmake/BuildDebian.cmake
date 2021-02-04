@@ -43,18 +43,18 @@ set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_MAKE_CLEAN_FILES
 # configure debian package files
 set(VERSION $ENV{VERSION})
 if ("${VERSION}" STREQUAL "")
-    set(VERSION "1.1.1rc")
+    set(VERSION "1.2.0rc")
 endif()
 set(BUILD_NUMBER $ENV{BUILD_NUMBER})
 if ("${BUILD_NUMBER}" STREQUAL "")
-    set(BUILD_NUMBER "1")
+    set(BUILD_NUMBER "200")
 endif()
 
 set(DEBIAN_DIR debian)
 
 execute_process(COMMAND whoami OUTPUT_VARIABLE WHOAMI OUTPUT_STRIP_TRAILING_WHITESPACE)
 execute_process(COMMAND hostname OUTPUT_VARIABLE HOSTNAME OUTPUT_STRIP_TRAILING_WHITESPACE)
-execute_process(COMMAND date "+%a, %d %b %Y %H:%M:%S %z" OUTPUT_VARIABLE DATE OUTPUT_STRIP_TRAILING_WHITESPACE)
+execute_process(COMMAND date -u -R OUTPUT_VARIABLE DATE OUTPUT_STRIP_TRAILING_WHITESPACE)
 
 configure_file(${LOCAL_SCRIPTS_DIR}/rules ${DEBIAN_DIR}/rules @ONLY)
 configure_file(${LOCAL_SCRIPTS_DIR}/control ${DEBIAN_DIR}/control @ONLY)

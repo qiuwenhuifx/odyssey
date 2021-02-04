@@ -8,30 +8,39 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH}
 
 set(CLANGCOMPILERSTANDART gnu11)
 
-execute_process(COMMAND git describe --always
-                OUTPUT_VARIABLE OD_VERSION_GIT
-                RESULT_VARIABLE OD_VERSION_GIT_RESULT
-                OUTPUT_STRIP_TRAILING_WHITESPACE
-                ERROR_QUIET)
-
-execute_process(COMMAND git rev-list --count HEAD
-                OUTPUT_VARIABLE OD_VERSION_NUMBER
-                RESULT_VARIABLE OD_VERSION_NUMBER_RESULT
-                OUTPUT_STRIP_TRAILING_WHITESPACE
-                ERROR_QUIET)
-
-if(NOT "${OD_VERSION_NUMBER_RESULT}" STREQUAL "0")
-    set(OD_VERSION_GIT "unknown")
-    add_definitions(-DOD_VERSION_NUMBER="unknown")
-else()
-    add_definitions(-DOD_VERSION_NUMBER="${OD_VERSION_NUMBER}")
-endif()
-
-if(NOT "${OD_VERSION_GIT_RESULT}" STREQUAL "0")
-    set(OD_VERSION_GIT "unknown")
-    add_definitions(-DOD_VERSION_GIT="unknown")
+set(OD_VERSION_GIT $ENV{VERSION})
+if ("${OD_VERSION_GIT}" STREQUAL "")
+    execute_process(COMMAND git describe --always
+                    OUTPUT_VARIABLE OD_VERSION_GIT
+                    RESULT_VARIABLE OD_VERSION_GIT_RESULT
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+    
+    if(NOT "${OD_VERSION_GIT_RESULT}" STREQUAL "0")
+        add_definitions(-DOD_VERSION_GIT="unknown")
+    else()
+        add_definitions(-DOD_VERSION_GIT="${OD_VERSION_GIT}")
+    endif()
 else()
     add_definitions(-DOD_VERSION_GIT="${OD_VERSION_GIT}")
+endif()
+
+set(OD_VERSION_NUMBER $ENV{BUILD_NUMBER})
+if ("${OD_VERSION_NUMBER}" STREQUAL "")
+
+    execute_process(COMMAND git rev-list --count HEAD
+                    OUTPUT_VARIABLE OD_VERSION_NUMBER
+                    RESULT_VARIABLE OD_VERSION_NUMBER_RESULT
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+
+    if(NOT "${OD_VERSION_NUMBER_RESULT}" STREQUAL "0")
+        add_definitions(-DOD_VERSION_NUMBER="unknown")
+    else()
+        add_definitions(-DOD_VERSION_NUMBER="${OD_VERSION_NUMBER}")
+    endif()
+else()
+    add_definitions(-DOD_VERSION_NUMBER="${OD_VERSION_NUMBER}")
 endif()
 
 execute_process(COMMAND ${CMAKE_C_COMPILER} --version
@@ -58,6 +67,8 @@ elseif("${CMAKE_BUILD_TYPE}" STREQUAL "ASAN")
 elseif("${CMAKE_BUILD_TYPE}" STREQUAL "TSAN")
     set(CMAKE_C_FLAGS "-std=${CLANGCOMPILERSTANDART} -g -fsanitize=thread -fno-sanitize-recover=all -pedantic -Wall -Wextra -Wstrict-aliasing -g -O0 -pthread")
 endif()
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${CC_FLAGS}")
 
 string(TOLOWER ${CMAKE_BUILD_TYPE} OD_VERSION_BUILD)
 add_definitions(-DOD_VERSION_BUILD="${OD_VERSION_BUILD}")
@@ -88,11 +99,11 @@ if (USE_BORINGSSL)
         set(od_ssl ${BORINGSSL_LIBRARIES})
         include_directories(${BORINGSSL_INCLUDE_DIR})
     endif ()
-else ()
+elseif ("${OPENSSL_LIBRARIES}" STREQUAL "")
     find_package(OpenSSL REQUIRED)
     set(od_ssl ${OPENSSL_LIBRARIES})
     include_directories(${OPENSSL_INCLUDE_DIR})
-    add_compile_definitions(USE_SSL)
+    add_definitions(-DUSE_SSL)
 endif ()
 
 # use PAM
@@ -102,6 +113,13 @@ if (PAM_FOUND)
     include_directories(${PAM_INCLUDE_DIR})
 endif()
 
+#scram
+
+if (USE_SCRAM)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DUSE_SCRAM")
+endif()
+
+#compression
 option(BUILD_COMPRESSION "Build with compression support" OFF)
 if(BUILD_COMPRESSION)
     set(compression_libraries "")
@@ -157,8 +175,17 @@ message(STATUS "BORINGSSL_INCLUDE_DIR:  ${BORINGSSL_INCLUDE_DIR}")
 message(STATUS "OPENSSL_VERSION:        ${OPENSSL_VERSION}")
 message(STATUS "OPENSSL_ROOT_DIR:       ${OPENSSL_ROOT_DIR}")
 message(STATUS "OPENSSL_INCLUDE_DIR:    ${OPENSSL_INCLUDE_DIR}")
-message(STATUS "PAM_LIBRARY:            ${PAM_LIBRARY}")
-message(STATUS "PAM_INCLUDE_DIR:        ${PAM_INCLUDE_DIR}")
+message(STATUS "OPENSSL_LIBRARIES:      ${OPENSSL_LIBRARIES}")
+
+if (PAM_FOUND)
+    message(STATUS "PAM_LIBRARY:            ${PAM_LIBRARY}")
+    message(STATUS "PAM_INCLUDE_DIR:        ${PAM_INCLUDE_DIR}")
+endif()
+
+if (USE_SCRAM)
+    message(STATUS "USE_SCRAM:               OK")
+endif()
+
 message(STATUS "BUILD_COMPRESSION:      ${BUILD_COMPRESSION}")
 if (BUILD_COMPRESSION)
     message(STATUS "ZSTD_INCLUDE_DIR:       ${ZSTD_INCLUDE_DIR}")
