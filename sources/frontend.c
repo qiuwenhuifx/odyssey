@@ -476,7 +476,6 @@ static inline bool od_eject_conn_with_rate(od_client_t *client,
 
 static inline bool od_eject_conn_with_timeout(od_client_t *client,
 					      od_server_t *server,
-					      od_instance_t *instance,
 					      uint64_t timeout)
 {
 	assert(server != NULL);
@@ -509,7 +508,7 @@ static inline bool od_should_drop_connection(od_client_t *client,
 				    /* case when we are out of any transactional block ut perform some stmt */
 				    od_server_synchronized(server))) {
 				if (od_eject_conn_with_timeout(
-					    client, server, instance,
+					    client, server,
 					    client->rule
 						    ->pool_client_idle_timeout)) {
 					od_log(&instance->logger, "shutdown",
@@ -530,7 +529,7 @@ static inline bool od_should_drop_connection(od_client_t *client,
 			    /*server is sync - that means client executed some stmts and got get result, and now just... do nothing */
 			    od_server_synchronized(server)) {
 				if (od_eject_conn_with_timeout(
-					    client, server, instance,
+					    client, server,
 					    client->rule
 						    ->pool_idle_in_transaction_timeout)) {
 					od_log(&instance->logger, "shutdown",
@@ -547,7 +546,8 @@ static inline bool od_should_drop_connection(od_client_t *client,
 		/* fall through */
 	case OD_RULE_POOL_TRANSACTION: {
 		//TODO:: drop no more than X connection per sec/min/whatever
-		if (od_likely(instance->shutdown_worker_id == INVALID_ID)) {
+		if (od_likely(instance->shutdown_worker_id ==
+			      INVALID_COROUTINE_ID)) {
 			// try to optimize likely path
 			return false;
 		}
@@ -710,6 +710,13 @@ static od_frontend_status_t od_frontend_remote_server(od_relay_t *relay,
 		is_ready_for_query = 1;
 		od_backend_ready(server, data, size);
 
+		if (is_deploy)
+			server->deploy_sync--;
+
+		if (!server->synced_settings) {
+			server->synced_settings = true;
+			break;
+		}
 		/* update server stats */
 		int64_t query_time = 0;
 		od_stat_query_end(&route->stats, &server->stats_state,
@@ -719,9 +726,6 @@ static od_frontend_status_t od_frontend_remote_server(od_relay_t *relay,
 				 server, "query time: %" PRIi64 " microseconds",
 				 query_time);
 		}
-
-		if (is_deploy)
-			server->deploy_sync--;
 
 		break;
 	}

@@ -62,6 +62,7 @@ static inline int od_router_grac_shutdown_cb(od_route_t *route, void **argv)
 	od_route_lock(route);
 	od_route_grac_shutdown_pool(route);
 	od_route_unlock(route);
+	return 1;
 }
 
 int od_router_reconfigure(od_router_t *router, od_rules_t *rules)
@@ -479,6 +480,8 @@ void od_router_detach(od_router_t *router, od_client_t *client)
 		server->route = NULL;
 		od_backend_close_connection(server);
 		od_backend_close(server);
+		od_server_pool_set(&route->server_pool, server,
+				   OD_SERVER_UNDEF);
 	}
 	od_client_pool_set(&route->client_pool, client, OD_CLIENT_PENDING);
 

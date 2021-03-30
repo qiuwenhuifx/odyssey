@@ -213,29 +213,28 @@ static int od_config_reader_open(od_config_reader_t *reader, char *config_file)
 {
 	reader->config_file = config_file;
 	/* read file */
-	struct stat st;
-	int rc = lstat(config_file, &st);
-	if (rc == -1)
-		goto error;
 	char *config_buf = NULL;
-	if (st.st_size > 0) {
-		config_buf = malloc(st.st_size);
-		if (config_buf == NULL)
-			goto error;
-		FILE *file = fopen(config_file, "r");
-		if (file == NULL) {
-			free(config_buf);
-			goto error;
-		}
-		rc = fread(config_buf, st.st_size, 1, file);
-		fclose(file);
-		if (rc != 1) {
-			free(config_buf);
-			goto error;
-		}
+	FILE *file = fopen(config_file, "r");
+	if (file == NULL)
+		goto error;
+	fseek(file, 0, SEEK_END);
+	int size = (int)ftell(file);
+	if (size == -1)
+		goto error;
+	fseek(file, 0, SEEK_SET);
+	config_buf = malloc(size);
+	if (config_buf == NULL)
+		goto error;
+	int rc = fread(config_buf, size, 1, file);
+	fclose(file);
+	if (rc != 1) {
+		free(config_buf);
+		goto error;
 	}
+
 	reader->data = config_buf;
-	reader->data_size = st.st_size;
+	reader->data_size = size;
+
 	od_parser_init(&reader->parser, reader->data, reader->data_size);
 	return 0;
 error:
@@ -385,6 +384,21 @@ static bool od_config_reader_number(od_config_reader_t *reader, int *number)
 		return false;
 	}
 	/* uint64 to int conversion */
+	*number = token.value.num;
+	return true;
+}
+
+static bool od_config_reader_number64(od_config_reader_t *reader,
+				      uint64_t *number)
+{
+	od_token_t token;
+	int rc;
+	rc = od_parser_next(&reader->parser, &token);
+	if (rc != OD_PARSER_NUM) {
+		od_parser_push(&reader->parser, &token);
+		od_config_reader_error(reader, &token, "expected 'number'");
+		return false;
+	}
 	*number = token.value.num;
 	return true;
 }
@@ -903,7 +917,7 @@ static int od_config_reader_route(od_config_reader_t *reader, char *db_name,
 			continue;
 		/* pool_client_idle_timeout */
 		case OD_LPOOL_CLIENT_IDLE_TIMEOUT:
-			if (!od_config_reader_number(
+			if (!od_config_reader_number64(
 				    reader, &rule->pool_client_idle_timeout)) {
 				return NOT_OK_RESPONSE;
 			}
@@ -911,7 +925,7 @@ static int od_config_reader_route(od_config_reader_t *reader, char *db_name,
 			continue;
 			/* pool_idle_in_transaction_timeout */
 		case OD_LPOOL_IDLE_IN_TRANSACTION_TIMEOUT:
-			if (!od_config_reader_number(
+			if (!od_config_reader_number64(
 				    reader,
 				    &rule->pool_idle_in_transaction_timeout)) {
 				return NOT_OK_RESPONSE;
