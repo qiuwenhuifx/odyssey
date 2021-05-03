@@ -43,6 +43,10 @@ struct od_client {
 	kiwi_key_t key;
 	od_server_t *server;
 	void *route;
+	/* passwd from config rule */
+	kiwi_password_t password;
+	/* user - proveded passwd, fallback to use this when no other option is available*/
+	kiwi_password_t received_password;
 	od_global_t *global;
 	od_list_t link_pool;
 	od_list_t link;
@@ -68,6 +72,8 @@ static inline void od_client_init(od_client_t *client)
 	kiwi_key_init(&client->key);
 	od_io_init(&client->io);
 	od_relay_init(&client->relay, &client->io);
+	kiwi_password_init(&client->password);
+	kiwi_password_init(&client->received_password);
 	od_list_init(&client->link_pool);
 	od_list_init(&client->link);
 }
@@ -87,6 +93,8 @@ static inline void od_client_free(od_client_t *client)
 	od_io_free(&client->io);
 	if (client->cond)
 		machine_cond_free(client->cond);
+	kiwi_password_free(&client->password);
+	kiwi_password_free(&client->received_password);
 	free(client);
 }
 

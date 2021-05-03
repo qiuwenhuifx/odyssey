@@ -83,9 +83,21 @@ struct od_rule {
 	od_list_t auth_common_names;
 	int auth_common_names_count;
 
+#ifdef PAM_FOUND
 	/*  PAM parametrs */
+
 	char *auth_pam_service;
 	od_pam_auth_data_t *auth_pam_data;
+#endif
+
+#ifdef LDAP_FOUND
+	char *ldap_endpoint_name;
+	od_ldap_endpoint_t *ldap_endpoint;
+	int ldap_pool_timeout;
+	int ldap_pool_size;
+#endif
+
+	char *auth_module;
 
 	/* password */
 	char *password;
@@ -117,6 +129,7 @@ struct od_rule {
 	int client_max;
 	int log_debug;
 	int log_query;
+	int reuse_client_passwd;
 	double *quantiles;
 	int quantiles_count;
 	uint64_t server_lifetime_us;
@@ -131,7 +144,8 @@ struct od_rules {
 void od_rules_init(od_rules_t *);
 void od_rules_free(od_rules_t *);
 int od_rules_validate(od_rules_t *, od_config_t *, od_logger_t *);
-int od_rules_merge(od_rules_t *, od_rules_t *);
+int od_rules_merge(od_rules_t *, od_rules_t *, od_list_t *added,
+		   od_list_t *deleted);
 void od_rules_print(od_rules_t *, od_logger_t *);
 
 /* rule */
@@ -143,6 +157,8 @@ int od_rules_compare(od_rule_t *, od_rule_t *);
 od_rule_t *od_rules_forward(od_rules_t *, char *, char *);
 
 od_rule_t *od_rules_match(od_rules_t *, char *, char *, int, int);
+
+void od_rules_rule_free(od_rule_t *rule);
 
 /* storage */
 od_rule_storage_t *od_rules_storage_add(od_rules_t *);

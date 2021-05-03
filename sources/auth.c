@@ -12,6 +12,7 @@
 static inline int od_auth_frontend_cleartext(od_client_t *client)
 {
 	od_instance_t *instance = client->global->instance;
+	od_route_t *route = client->route;
 
 	/* AuthenticationCleartextPassword */
 	machine_msg_t *msg;
@@ -58,6 +59,49 @@ static inline int od_auth_frontend_cleartext(od_client_t *client)
 		return -1;
 	}
 
+	if (route->rule->reuse_client_passwd) {
+		kiwi_password_copy(&client->received_password, &client_token);
+		od_debug(&instance->logger, "auth", client, NULL,
+			 "saved user password to perform backend auth");
+	}
+
+	od_extention_t *extentions = client->global->extentions;
+
+#ifdef LDAP_FOUND
+	if (client->rule->ldap_endpoint_name) {
+		od_debug(&instance->logger, "auth", client, NULL,
+			 "checking passwd against ldap endpoint %s",
+			 client->rule->ldap_endpoint_name);
+
+		rc = od_auth_ldap(client, &client_token);
+		kiwi_password_free(&client_token);
+		machine_msg_free(msg);
+		if (rc != OK_RESPONSE) {
+			goto auth_failed;
+		}
+		return OK_RESPONSE;
+	}
+#endif
+	if (client->rule->auth_module) {
+		od_module_t *modules = extentions->modules;
+
+		/* auth callback */
+		od_module_t *module;
+		module = od_modules_find(modules, client->rule->auth_module);
+		if (module->od_auth_cleartext_cb == NULL) {
+			kiwi_password_free(&client_token);
+			machine_msg_free(msg);
+			goto auth_failed;
+		}
+		int rc = module->od_auth_cleartext_cb(client, &client_token);
+		kiwi_password_free(&client_token);
+		machine_msg_free(msg);
+		if (rc != OD_MODULE_CB_OK_RETCODE) {
+			goto auth_failed;
+		}
+		return OK_RESPONSE;
+	}
+
 #ifdef PAM_FOUND
 	/* support PAM authentication */
 	if (client->rule->auth_pam_service) {
@@ -69,20 +113,19 @@ static inline int od_auth_frontend_cleartext(od_client_t *client)
 				 client->rule->auth_pam_data, client->io.io);
 		kiwi_password_free(&client_token);
 		machine_msg_free(msg);
-		if (rc == -1)
+		if (rc == -1) {
 			goto auth_failed;
-		return 0;
+		}
+		return OK_RESPONSE;
 	}
 #endif
 
 	/* use remote or local password source */
 	kiwi_password_t client_password;
-	kiwi_password_init(&client_password);
 	if (client->rule->auth_query) {
 		char peer[128];
 		od_getpeername(client->io.io, peer, sizeof(peer), 1, 0);
-		rc = od_auth_query(client->global, client->rule, peer,
-				   &client->startup.user, &client_password);
+		rc = od_auth_query(client, peer);
 		if (rc == -1) {
 			od_error(&instance->logger, "auth", client, NULL,
 				 "failed to make auth_query");
@@ -91,12 +134,11 @@ static inline int od_auth_frontend_cleartext(od_client_t *client)
 				KIWI_INVALID_AUTHORIZATION_SPECIFICATION,
 				"failed to make auth query");
 			kiwi_password_free(&client_token);
-			kiwi_password_free(&client_password);
 			machine_msg_free(msg);
-			return -1;
+			return NOT_OK_RESPONSE;
 		}
 
-		if (client_password.password == NULL) {
+		if (client->password.password == NULL) {
 			od_log(&instance->logger, "auth", client, NULL,
 			       "user '%s.%s' incorrect user from %s",
 			       client->startup.database.value,
@@ -105,8 +147,9 @@ static inline int od_auth_frontend_cleartext(od_client_t *client)
 					  "incorrect user");
 			kiwi_password_free(&client_token);
 			machine_msg_free(msg);
-			return -1;
+			return NOT_OK_RESPONSE;
 		}
+		client_password = client->password;
 	} else {
 		client_password.password_len = client->rule->password_len + 1;
 		client_password.password = client->rule->password;
@@ -116,10 +159,9 @@ static inline int od_auth_frontend_cleartext(od_client_t *client)
 	int check = kiwi_password_compare(&client_password, &client_token);
 	kiwi_password_free(&client_token);
 	machine_msg_free(msg);
-	if (client->rule->auth_query)
-		kiwi_password_free(&client_password);
-	if (check)
-		return 0;
+	if (check) {
+		return OK_RESPONSE;
+	}
 
 	goto auth_failed;
 
@@ -128,7 +170,7 @@ auth_failed:
 	       "user '%s.%s' incorrect password",
 	       client->startup.database.value, client->startup.user.value);
 	od_frontend_error(client, KIWI_INVALID_PASSWORD, "incorrect password");
-	return -1;
+	return NOT_OK_RESPONSE;
 }
 
 static inline int od_auth_frontend_md5(od_client_t *client)
@@ -193,8 +235,7 @@ static inline int od_auth_frontend_md5(od_client_t *client)
 	if (client->rule->auth_query) {
 		char peer[128];
 		od_getpeername(client->io.io, peer, sizeof(peer), 1, 0);
-		rc = od_auth_query(client->global, client->rule, peer,
-				   &client->startup.user, &query_password);
+		rc = od_auth_query(client, peer);
 		if (rc == -1) {
 			od_error(&instance->logger, "auth", client, NULL,
 				 "failed to make auth_query");
@@ -208,7 +249,7 @@ static inline int od_auth_frontend_md5(od_client_t *client)
 			return -1;
 		}
 
-		if (query_password.password == NULL) {
+		if (client->password.password == NULL) {
 			od_log(&instance->logger, "auth", client, NULL,
 			       "user '%s.%s' incorrect user from %s",
 			       client->startup.database.value,
@@ -219,11 +260,35 @@ static inline int od_auth_frontend_md5(od_client_t *client)
 			machine_msg_free(msg);
 			return -1;
 		}
-		query_password.password_len--;
+
+		query_password = client->password;
+		query_password.password_len = client->password.password_len - 1;
 	} else {
 		query_password.password_len = client->rule->password_len;
 		query_password.password = client->rule->password;
 	}
+
+#ifdef LDAP_FOUND
+	if (client->rule->ldap_endpoint) {
+		od_debug(&instance->logger, "auth", client, NULL,
+			 "checking passwd against ldap endpoint %s",
+			 client->rule->ldap_endpoint_name);
+
+		rc = od_auth_ldap(client, &client_token);
+		kiwi_password_free(&client_token);
+		machine_msg_free(msg);
+		if (rc != OK_RESPONSE) {
+			od_log(&instance->logger, "auth", client, NULL,
+			       "user '%s.%s' incorrect password",
+			       client->startup.database.value,
+			       client->startup.user.value);
+			od_frontend_error(client, KIWI_INVALID_PASSWORD,
+					  "incorrect password");
+			return NOT_OK_RESPONSE;
+		}
+		return OK_RESPONSE;
+	}
+#endif
 
 	/* prepare password hash */
 	rc = kiwi_password_md5(&client_password, client->startup.user.value,
@@ -246,8 +311,6 @@ static inline int od_auth_frontend_md5(od_client_t *client)
 	kiwi_password_free(&client_password);
 	kiwi_password_free(&client_token);
 	machine_msg_free(msg);
-	if (client->rule->auth_query)
-		kiwi_password_free(&query_password);
 
 	if (!check) {
 		od_log(&instance->logger, "auth", client, NULL,
@@ -334,8 +397,7 @@ static inline int od_auth_frontend_scram_sha_256(od_client_t *client)
 	if (client->rule->auth_query) {
 		char peer[128];
 		od_getpeername(client->io.io, peer, sizeof(peer), 1, 0);
-		rc = od_auth_query(client->global, client->rule, peer,
-				   &client->startup.user, &query_password);
+		rc = od_auth_query(client, peer);
 		if (rc == -1) {
 			od_error(&instance->logger, "auth", client, NULL,
 				 "failed to make auth_query");
@@ -348,7 +410,7 @@ static inline int od_auth_frontend_scram_sha_256(od_client_t *client)
 			return -1;
 		}
 
-		if (query_password.password == NULL) {
+		if (client->password.password == NULL) {
 			od_log(&instance->logger, "auth", client, NULL,
 			       "user '%s.%s' incorrect user from %s",
 			       client->startup.database.value,
@@ -358,7 +420,8 @@ static inline int od_auth_frontend_scram_sha_256(od_client_t *client)
 			machine_msg_free(msg);
 			return -1;
 		}
-		query_password.password_len--;
+
+		query_password = client->password;
 	} else {
 		query_password.password_len = client->rule->password_len;
 		query_password.password = client->rule->password;
@@ -637,7 +700,8 @@ int od_auth_frontend(od_client_t *client)
 	return 0;
 }
 
-static inline int od_auth_backend_cleartext(od_server_t *server)
+static inline int od_auth_backend_cleartext(od_server_t *server,
+					    od_client_t *client)
 {
 	od_instance_t *instance = server->global->instance;
 	od_route_t *route = server->route;
@@ -649,12 +713,19 @@ static inline int od_auth_backend_cleartext(od_server_t *server)
 	/* use storage or user password */
 	char *password;
 	int password_len;
-	if (route->rule->storage_password) {
+
+	if (client != NULL && client->password.password != NULL) {
+		password = client->password.password;
+		password_len = client->password.password_len - /* NULL */ 1;
+	} else if (route->rule->storage_password) {
 		password = route->rule->storage_password;
 		password_len = route->rule->storage_password_len;
 	} else if (route->rule->password) {
 		password = route->rule->password;
 		password_len = route->rule->password_len;
+	} else if (client->received_password.password != NULL) {
+		password = client->received_password.password;
+		password_len = client->received_password.password_len - 1;
 	} else {
 		od_error(&instance->logger, "auth", NULL, server,
 			 "password required for route '%s.%s'",
@@ -680,7 +751,8 @@ static inline int od_auth_backend_cleartext(od_server_t *server)
 	return 0;
 }
 
-static inline int od_auth_backend_md5(od_server_t *server, char salt[4])
+static inline int od_auth_backend_md5(od_server_t *server, char salt[4],
+				      od_client_t *client)
 {
 	od_instance_t *instance = server->global->instance;
 	od_route_t *route = server->route;
@@ -703,12 +775,18 @@ static inline int od_auth_backend_md5(od_server_t *server, char salt[4])
 	/* use storage or user password */
 	char *password;
 	int password_len;
-	if (route->rule->storage_password) {
+	if (client != NULL && client->password.password != NULL) {
+		password = client->password.password;
+		password_len = client->password.password_len - /* NULL */ 1;
+	} else if (route->rule->storage_password) {
 		password = route->rule->storage_password;
 		password_len = route->rule->storage_password_len;
 	} else if (route->rule->password) {
 		password = route->rule->password;
 		password_len = route->rule->password_len;
+	} else if (client->received_password.password != NULL) {
+		password = client->received_password.password;
+		password_len = client->received_password.password_len - 1;
 	} else {
 		od_error(&instance->logger, "auth", NULL, server,
 			 "password required for route '%s.%s'",
@@ -750,7 +828,7 @@ static inline int od_auth_backend_md5(od_server_t *server, char salt[4])
 
 #ifdef USE_SCRAM
 
-static inline int od_auth_backend_sasl(od_server_t *server)
+static inline int od_auth_backend_sasl(od_server_t *server, od_client_t *client)
 {
 	od_instance_t *instance = server->global->instance;
 	od_route_t *route = server->route;
@@ -768,7 +846,9 @@ static inline int od_auth_backend_sasl(od_server_t *server)
 	od_debug(&instance->logger, "auth", NULL, server,
 		 "requested SASL authentication");
 
-	if (!route->rule->storage_password && !route->rule->password) {
+	if (!route->rule->storage_password && !route->rule->password &&
+	    (client == NULL || client->password.password == NULL) &&
+	    client->received_password.password == NULL) {
 		od_error(&instance->logger, "auth", NULL, server,
 			 "password required for route '%s.%s'",
 			 route->rule->db_name, route->rule->user_name);
@@ -796,9 +876,11 @@ static inline int od_auth_backend_sasl(od_server_t *server)
 
 	return 0;
 }
+
 static inline int od_auth_backend_sasl_continue(od_server_t *server,
 						char *auth_data,
-						size_t auth_data_size)
+						size_t auth_data_size,
+						od_client_t *client)
 {
 	od_instance_t *instance = server->global->instance;
 	od_route_t *route = server->route;
@@ -824,10 +906,19 @@ static inline int od_auth_backend_sasl_continue(od_server_t *server,
 	/* use storage or user password */
 	char *password;
 
-	if (route->rule->storage_password) {
+	if (client != NULL && client->password.password != NULL) {
+		od_error(
+			&instance->logger, "auth", NULL, server,
+			"cannot authenticate with SCRAM secret from auth_query",
+			route->rule->db_name, route->rule->user_name);
+
+		return -1;
+	} else if (route->rule->storage_password) {
 		password = route->rule->storage_password;
 	} else if (route->rule->password) {
 		password = route->rule->password;
+	} else if (client->received_password.password) {
+		password = client->received_password.password;
 	} else {
 		od_error(&instance->logger, "auth", NULL, server,
 			 "password required for route '%s.%s'",
@@ -895,7 +986,8 @@ static inline int od_auth_backend_sasl_final(od_server_t *server,
 
 #endif
 
-int od_auth_backend(od_server_t *server, machine_msg_t *msg)
+int od_auth_backend(od_server_t *server, machine_msg_t *msg,
+		    od_client_t *client)
 {
 	od_instance_t *instance = server->global->instance;
 	assert(*(char *)machine_msg_data(msg) == KIWI_BE_AUTHENTICATION);
@@ -920,24 +1012,24 @@ int od_auth_backend(od_server_t *server, machine_msg_t *msg)
 		return 0;
 	/* AuthenticationCleartextPassword */
 	case 3:
-		rc = od_auth_backend_cleartext(server);
+		rc = od_auth_backend_cleartext(server, client);
 		if (rc == -1)
 			return -1;
 		break;
 	/* AuthenticationMD5Password */
 	case 5:
-		rc = od_auth_backend_md5(server, salt);
+		rc = od_auth_backend_md5(server, salt, client);
 		if (rc == -1)
 			return -1;
 		break;
 #ifdef USE_SCRAM
 	/* AuthenticationSASL */
 	case 10:
-		return od_auth_backend_sasl(server);
+		return od_auth_backend_sasl(server, client);
 	/* AuthenticationSASLContinue */
 	case 11:
 		return od_auth_backend_sasl_continue(server, auth_data,
-						     auth_data_size);
+						     auth_data_size, client);
 	/* AuthenticationSASLContinue */
 	case 12:
 		return od_auth_backend_sasl_final(server, auth_data,

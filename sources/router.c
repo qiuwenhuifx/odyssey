@@ -9,7 +9,7 @@
 #include <machinarium.h>
 #include <odyssey.h>
 
-void od_router_init(od_router_t *router)
+void od_router_init(od_router_t *router, od_global_t *global)
 {
 	pthread_mutex_init(&router->lock, NULL);
 	od_rules_init(&router->rules);
@@ -18,6 +18,8 @@ void od_router_init(od_router_t *router)
 	router->clients = 0;
 	router->clients_routing = 0;
 	router->servers_routing = 0;
+
+	router->global = global;
 
 	router->router_err_logger = od_err_logger_create_default();
 }
@@ -70,9 +72,38 @@ int od_router_reconfigure(od_router_t *router, od_rules_t *rules)
 	od_router_lock(router);
 
 	int updates;
-	updates = od_rules_merge(&router->rules, rules);
+	od_list_t added;
+	od_list_t deleted;
+	od_list_init(&added);
+	od_list_init(&deleted);
+
+	updates = od_rules_merge(&router->rules, rules, &added, &deleted);
 
 	if (updates > 0) {
+		od_extention_t *extentions = router->global->extentions;
+		od_module_t *modules = extentions->modules;
+		/* reloadcallback */
+		od_list_t *i;
+		od_list_foreach(&modules->link, i)
+		{
+			od_module_t *module;
+			module = od_container_of(i, od_module_t, link);
+			if (module->od_config_reload_cb == NULL)
+				continue;
+
+			if (module->od_config_reload_cb(&added, &deleted) ==
+			    OD_MODULE_CB_FAIL_RETCODE) {
+				break;
+			}
+		}
+
+		od_list_foreach(&deleted, i)
+		{
+			od_rule_t *rule;
+			rule = od_container_of(i, od_rule_t, link);
+			od_rules_rule_free(rule);
+		}
+
 		od_route_pool_foreach(&router->route_pool,
 				      od_router_grac_shutdown_cb, NULL);
 	}
@@ -88,7 +119,7 @@ static inline int od_router_expire_server_cb(od_server_t *server, void **argv)
 	int *count = argv[1];
 
 	/* remove server for server pool */
-	od_server_pool_set(&route->server_pool, server, OD_SERVER_UNDEF);
+	od_pg_server_pool_set(&route->server_pool, server, OD_SERVER_UNDEF);
 
 	od_list_append(expire_list, &server->link);
 	(*count)++;
@@ -122,7 +153,7 @@ static inline int od_router_expire_server_tick_cb(od_server_t *server,
 		return 0;
 
 	/* remove server for server pool */
-	od_server_pool_set(&route->server_pool, server, OD_SERVER_UNDEF);
+	od_pg_server_pool_set(&route->server_pool, server, OD_SERVER_UNDEF);
 
 	/* add to expire list */
 	od_list_append(expire_list, &server->link);
@@ -334,6 +365,8 @@ bool od_should_not_spun_connection_yet(int connections_in_pool, int pool_size,
 	return currently_routing >= max_routing;
 }
 
+#define MAX_BUZYLOOP_RETRY 10
+
 od_router_status_t od_router_attach(od_router_t *router, od_client_t *client,
 				    bool wait_for_idle)
 {
@@ -352,8 +385,8 @@ od_router_status_t od_router_attach(od_router_t *router, od_client_t *client,
 	int busyloop_sleep = 0;
 	int busyloop_retry = 0;
 	for (;;) {
-		server = od_server_pool_next(&route->server_pool,
-					     OD_SERVER_IDLE);
+		server = od_pg_server_pool_next(&route->server_pool,
+						OD_SERVER_IDLE);
 		if (server)
 			goto attach;
 
@@ -383,7 +416,8 @@ od_router_status_t od_router_attach(od_router_t *router, od_client_t *client,
 					od_route_unlock(route);
 					machine_sleep(busyloop_sleep);
 					busyloop_retry++;
-					if (busyloop_retry > 10)
+					// TODO: support this opt in configure file
+					if (busyloop_retry > MAX_BUZYLOOP_RETRY)
 						busyloop_sleep = 1;
 					od_route_lock(route);
 					continue;
@@ -435,7 +469,7 @@ od_router_status_t od_router_attach(od_router_t *router, od_client_t *client,
 	od_route_lock(route);
 
 attach:
-	od_server_pool_set(&route->server_pool, server, OD_SERVER_ACTIVE);
+	od_pg_server_pool_set(&route->server_pool, server, OD_SERVER_ACTIVE);
 	od_client_pool_set(&route->client_pool, client, OD_CLIENT_ACTIVE);
 
 	client->server = server;
@@ -472,7 +506,8 @@ void od_router_detach(od_router_t *router, od_client_t *client)
 	client->server = NULL;
 	server->client = NULL;
 	if (od_likely(!server->offline)) {
-		od_server_pool_set(&route->server_pool, server, OD_SERVER_IDLE);
+		od_pg_server_pool_set(&route->server_pool, server,
+				      OD_SERVER_IDLE);
 	} else {
 		od_instance_t *instance = server->global->instance;
 		od_debug(&instance->logger, "expire", NULL, server,
@@ -480,8 +515,8 @@ void od_router_detach(od_router_t *router, od_client_t *client)
 		server->route = NULL;
 		od_backend_close_connection(server);
 		od_backend_close(server);
-		od_server_pool_set(&route->server_pool, server,
-				   OD_SERVER_UNDEF);
+		od_pg_server_pool_set(&route->server_pool, server,
+				      OD_SERVER_UNDEF);
 	}
 	od_client_pool_set(&route->client_pool, client, OD_CLIENT_PENDING);
 
@@ -489,8 +524,9 @@ void od_router_detach(od_router_t *router, od_client_t *client)
 	od_route_unlock(route);
 
 	/* notify waiters */
-	if (signal)
+	if (signal) {
 		od_route_signal(route);
+	}
 }
 
 void od_router_close(od_router_t *router, od_client_t *client)
@@ -505,7 +541,7 @@ void od_router_close(od_router_t *router, od_client_t *client)
 	od_route_lock(route);
 
 	od_client_pool_set(&route->client_pool, client, OD_CLIENT_PENDING);
-	od_server_pool_set(&route->server_pool, server, OD_SERVER_UNDEF);
+	od_pg_server_pool_set(&route->server_pool, server, OD_SERVER_UNDEF);
 	client->server = NULL;
 	server->client = NULL;
 	server->route = NULL;

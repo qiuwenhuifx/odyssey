@@ -18,7 +18,7 @@ void od_rules_init(od_rules_t *rules)
 	od_list_init(&rules->rules);
 }
 
-static inline void od_rules_rule_free(od_rule_t *);
+void od_rules_rule_free(od_rule_t *);
 
 void od_rules_free(od_rules_t *rules)
 {
@@ -198,6 +198,12 @@ od_rule_t *od_rules_add(od_rules_t *rules)
 #ifdef PAM_FOUND
 	rule->auth_pam_data = od_pam_auth_data_create();
 #endif
+#ifdef LDAP_FOUND
+	rule->ldap_endpoint_name = NULL;
+	rule->ldap_endpoint = NULL;
+#endif
+	/* maybe some configuration here in future */
+	rule->reuse_client_passwd = 1;
 	od_list_init(&rule->auth_common_names);
 	od_list_init(&rule->link);
 	od_list_append(&rules->rules, &rule->link);
@@ -205,7 +211,7 @@ od_rule_t *od_rules_add(od_rules_t *rules)
 	return rule;
 }
 
-static inline void od_rules_rule_free(od_rule_t *rule)
+void od_rules_rule_free(od_rule_t *rule)
 {
 	if (rule->db_name)
 		free(rule->db_name);
@@ -243,6 +249,9 @@ static inline void od_rules_rule_free(od_rule_t *rule)
 #ifdef PAM_FOUND
 	od_pam_auth_data_free(rule->auth_pam_data);
 #endif
+	if (rule->auth_module) {
+		free(rule->auth_module);
+	}
 	if (rule->quantiles) {
 		free(rule->quantiles);
 	}
@@ -566,7 +575,8 @@ int od_rules_rule_compare(od_rule_t *a, od_rule_t *b)
 	return 1;
 }
 
-__attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src)
+__attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src,
+					od_list_t *added, od_list_t *deleted)
 {
 	int count_mark = 0;
 	int count_deleted = 0;
@@ -603,6 +613,8 @@ __attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src)
 			/* add new version, origin version still exists */
 		} else {
 			/* add new version */
+
+			//			od_list_append(added, &rule->link);
 		}
 
 		od_list_unlink(&rule->link);
@@ -627,7 +639,9 @@ __attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src)
 			rule->obsolete = is_obsolete;
 
 			if (is_obsolete && rule->refs == 0) {
-				od_rules_rule_free(rule);
+				od_list_unlink(&rule->link);
+				od_list_init(&rule->link);
+				od_list_append(deleted, &rule->link);
 				count_deleted++;
 				count_mark--;
 			}
@@ -765,7 +779,13 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 
 			if (rule->password == NULL &&
 			    rule->auth_query == NULL &&
-			    rule->auth_pam_service == NULL) {
+			    rule->auth_pam_service == NULL &&
+			    rule->auth_module == NULL
+#ifdef LDAP_FOUND
+			    && rule->ldap_endpoint == NULL
+#endif
+			) {
+
 				od_error(logger, "rules", NULL, NULL,
 					 "rule '%s.%s': password is not set",
 					 rule->db_name, rule->user_name);

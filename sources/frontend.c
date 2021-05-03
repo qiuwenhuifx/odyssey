@@ -33,8 +33,9 @@ int od_frontend_error(od_client_t *client, char *code, char *fmt, ...)
 	machine_msg_t *msg;
 	msg = od_frontend_error_msg(client, NULL, code, fmt, args);
 	va_end(args);
-	if (msg == NULL)
+	if (msg == NULL) {
 		return -1;
+	}
 	return od_write(&client->io, msg);
 }
 
@@ -209,7 +210,9 @@ od_frontend_attach(od_client_t *client, char *context,
 			continue;
 		}
 		od_debug(&instance->logger, context, client, server,
-			 "client %s attached to %s%.*s", client->id.id,
+			 "client %s%.*s attached to %s%.*s",
+			 client->id.id_prefix,
+			 (int)sizeof(client->id.id_prefix), client->id.id,
 			 server->id.id_prefix,
 			 (int)sizeof(server->id.id_prefix), server->id.id);
 
@@ -220,7 +223,7 @@ od_frontend_attach(od_client_t *client, char *context,
 
 		int rc;
 		od_atomic_u32_inc(&router->servers_routing);
-		rc = od_backend_connect(server, context, route_params);
+		rc = od_backend_connect(server, context, route_params, client);
 		od_atomic_u32_dec(&router->servers_routing);
 		if (rc == -1) {
 			/* In case of 'too many connections' error, retry attach attempt by
@@ -475,6 +478,7 @@ static inline bool od_eject_conn_with_rate(od_client_t *client,
 }
 
 static inline bool od_eject_conn_with_timeout(od_client_t *client,
+					      __attribute__((unused))
 					      od_server_t *server,
 					      uint64_t timeout)
 {
@@ -1159,7 +1163,8 @@ void od_frontend(void *arg)
 	od_client_t *client = arg;
 	od_instance_t *instance = client->global->instance;
 	od_router_t *router = client->global->router;
-	od_module_t *modules = client->global->modules;
+	od_extention_t *extentions = client->global->extentions;
+	od_module_t *modules = extentions->modules;
 
 	/* log client connection */
 	if (instance->config.log_session) {
