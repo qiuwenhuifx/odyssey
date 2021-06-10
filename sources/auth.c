@@ -59,7 +59,7 @@ static inline int od_auth_frontend_cleartext(od_client_t *client)
 		return -1;
 	}
 
-	if (route->rule->reuse_client_passwd) {
+	if (route->rule->enable_password_passthrough) {
 		kiwi_password_copy(&client->received_password, &client_token);
 		od_debug(&instance->logger, "auth", client, NULL,
 			 "saved user password to perform backend auth");
@@ -723,7 +723,8 @@ static inline int od_auth_backend_cleartext(od_server_t *server,
 	} else if (route->rule->password) {
 		password = route->rule->password;
 		password_len = route->rule->password_len;
-	} else if (client->received_password.password != NULL) {
+	} else if (client != NULL &&
+		   client->received_password.password != NULL) {
 		password = client->received_password.password;
 		password_len = client->received_password.password_len - 1;
 	} else {
@@ -784,7 +785,8 @@ static inline int od_auth_backend_md5(od_server_t *server, char salt[4],
 	} else if (route->rule->password) {
 		password = route->rule->password;
 		password_len = route->rule->password_len;
-	} else if (client->received_password.password != NULL) {
+	} else if (client != NULL &&
+		   client->received_password.password != NULL) {
 		password = client->received_password.password;
 		password_len = client->received_password.password_len - 1;
 	} else {

@@ -591,7 +591,7 @@ static od_frontend_status_t od_frontend_local(od_client_t *client)
 	od_instance_t *instance = client->global->instance;
 
 	for (;;) {
-		machine_msg_t *msg;
+		machine_msg_t *msg = NULL;
 		for (;;) {
 			/* local server is alwys null */
 			if (od_should_drop_connection(client, NULL)) {
@@ -606,6 +606,7 @@ static od_frontend_status_t od_frontend_local(od_client_t *client)
 
 			if (machine_timedout()) {
 				/* retry wait to recheck exit condition */
+				assert(msg == NULL);
 				continue;
 			}
 
@@ -742,7 +743,7 @@ static od_frontend_status_t od_frontend_remote_server(od_relay_t *relay,
 		return OD_SKIP;
 
 	/* handle transaction pooling */
-	if (is_ready_for_query) {
+	if (is_ready_for_query && od_server_synchronized(server)) {
 		if ((route->rule->pool == OD_RULE_POOL_TRANSACTION ||
 		     server->offline) &&
 		    !server->is_transaction && !route->id.physical_rep &&
@@ -766,6 +767,23 @@ static void od_frontend_log_query(od_instance_t *instance, od_client_t *client,
 
 	od_log(&instance->logger, "query", client, NULL, "%.*s", query_len,
 	       query);
+}
+
+static void od_frontend_log_parse(od_instance_t *instance, od_client_t *client,
+				  char *data, int size)
+{
+	uint32_t query_len;
+	char *query;
+	uint32_t name_len;
+	char *name;
+	int rc;
+	rc = kiwi_be_read_parse(data, size, &name, &name_len, &query,
+				&query_len);
+	if (rc == -1)
+		return;
+
+	od_log(&instance->logger, "parse", client, NULL, "%.*s %.*s", name_len,
+	       name, query_len, query);
 }
 
 static od_frontend_status_t od_frontend_remote_client(od_relay_t *relay,
@@ -805,6 +823,10 @@ static od_frontend_status_t od_frontend_remote_client(od_relay_t *relay,
 	case KIWI_FE_SYNC:
 		/* update server sync state */
 		od_server_sync_request(server, 1);
+		break;
+	case KIWI_FE_PARSE:
+		if (instance->config.log_query || route->rule->log_query)
+			od_frontend_log_parse(instance, client, data, size);
 		break;
 	default:
 		break;
@@ -944,9 +966,8 @@ static od_frontend_status_t od_frontend_remote(od_client_t *client)
 		if (status == OD_DETACH) {
 			/* detach on transaction pooling  */
 			/* write any pending data to server first */
-			od_frontend_status_t flush_status;
-			flush_status = od_relay_flush(&server->relay);
-			if (flush_status != OD_OK)
+			status = od_relay_flush(&server->relay);
+			if (status != OD_OK)
 				break;
 			od_relay_detach(&client->relay);
 			od_relay_stop(&server->relay);
@@ -954,7 +975,7 @@ static od_frontend_status_t od_frontend_remote(od_client_t *client)
 			/* cleanup server */
 			rc = od_reset(server);
 			if (rc == -1) {
-				flush_status = OD_ESERVER_WRITE;
+				status = OD_ESERVER_WRITE;
 				break;
 			}
 
@@ -1108,8 +1129,8 @@ static void od_frontend_cleanup(od_client_t *client, char *context,
 		       od_frontend_status_to_str(status));
 		od_frontend_error(client, KIWI_CONNECTION_FAILURE,
 				  "remote server read/write error %s%.*s",
-				  server->id.id_prefix, sizeof(server->id.id),
-				  server->id.id);
+				  server->id.id_prefix,
+				  (int)sizeof(server->id.id), server->id.id);
 		/* close backend connection */
 		od_router_close(router, client);
 		break;
@@ -1354,6 +1375,16 @@ void od_frontend(void *arg)
 	rc = od_auth_frontend(client);
 
 	if (rc != OK_RESPONSE) {
+		/* rc == -1
+                 * here we ignore module retcode because auth already failed
+                 * we just inform side modules that usr was trying to log in
+                 */
+		od_list_foreach(&modules->link, i)
+		{
+			od_module_t *module;
+			module = od_container_of(i, od_module_t, link);
+			module->auth_complete_cb(client, rc);
+		}
 		goto cleanup;
 	}
 
@@ -1362,19 +1393,9 @@ void od_frontend(void *arg)
 	{
 		od_module_t *module;
 		module = od_container_of(i, od_module_t, link);
-
-		if (rc == OK_RESPONSE) {
-			rc = module->auth_complete_cb(client, rc);
-			if (rc != OD_MODULE_CB_OK_RETCODE) {
-				// user blocked from module callback
-				goto cleanup;
-			}
-		} else {
-			/* rc == -1
-			 * here we ignore module retcode because auth already failed
-			 * we just inform side modules that usr was trying to log in
-			 */
-			module->auth_complete_cb(client, rc);
+		rc = module->auth_complete_cb(client, rc);
+		if (rc != OD_MODULE_CB_OK_RETCODE) {
+			// user blocked from module callback
 			goto cleanup;
 		}
 	}

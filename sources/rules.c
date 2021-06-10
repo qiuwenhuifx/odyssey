@@ -202,8 +202,7 @@ od_rule_t *od_rules_add(od_rules_t *rules)
 	rule->ldap_endpoint_name = NULL;
 	rule->ldap_endpoint = NULL;
 #endif
-	/* maybe some configuration here in future */
-	rule->reuse_client_passwd = 1;
+	rule->enable_password_passthrough = 0;
 	od_list_init(&rule->auth_common_names);
 	od_list_init(&rule->link);
 	od_list_append(&rules->rules, &rule->link);
@@ -767,8 +766,11 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 		} else if (strcmp(rule->auth, "clear_text") == 0) {
 			rule->auth_mode = OD_RULE_AUTH_CLEAR_TEXT;
 
-			if (rule->auth_query != NULL &&
-			    rule->auth_pam_service != NULL) {
+			if (rule->auth_query != NULL
+#ifdef PAM_FOUND
+			    && rule->auth_pam_service != NULL
+#endif
+			) {
 				od_error(
 					logger, "rules", NULL, NULL,
 					"auth query and pam service auth method cannot be "
@@ -777,10 +779,11 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 				return -1;
 			}
 
-			if (rule->password == NULL &&
-			    rule->auth_query == NULL &&
-			    rule->auth_pam_service == NULL &&
-			    rule->auth_module == NULL
+			if (rule->password == NULL && rule->auth_query == NULL
+#ifdef PAM_FOUND
+			    && rule->auth_pam_service == NULL
+#endif
+			    && rule->auth_module == NULL
 #ifdef LDAP_FOUND
 			    && rule->ldap_endpoint == NULL
 #endif

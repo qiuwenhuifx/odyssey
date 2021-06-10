@@ -18,6 +18,7 @@
 #include "sources/macro.h"
 #include "sources/build.h"
 #include "sources/atomic.h"
+#include "sources/sysv.h"
 #include "sources/util.h"
 
 #include "sources/debugprintf.h"
@@ -100,6 +101,7 @@
 #include "sources/router_cancel.h"
 #include "sources/router.h"
 #include "sources/instance.h"
+#include "sources/option.h"
 #include "sources/cron.h"
 #include "sources/system.h"
 #include "sources/sighandler.h"

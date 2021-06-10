@@ -3,6 +3,7 @@
 *.so
 .idea/
 .init
+*.swp
 .conf.example
 .logrotate
 sources/odyssey
@@ -12,6 +13,7 @@ test/odyssey_test
 test/odyssey/data
 third_party/machinarium/sources/build.h
 third_party/machinarium/benchmark/benchmark_csw
+third_party/machinarium/benchmark/benchmark_csw2
 third_party/machinarium/benchmark/benchmark_channel
 third_party/machinarium/benchmark/benchmark_channel_shared
 build/

@@ -106,7 +106,7 @@ od_retcode_t od_ldap_endpoint_prepare(od_ldap_endpoint_t *le)
 
 static inline od_retcode_t od_ldap_server_prepare(od_logger_t *logger,
 						  od_ldap_server_t *serv,
-						  od_route_t *route)
+						  od_client_t *client)
 {
 	od_retcode_t rc;
 	char *auth_user = NULL;
@@ -142,10 +142,10 @@ static inline od_retcode_t od_ldap_server_prepare(od_logger_t *logger,
 		} else if (serv->endpoint->ldapsearchattribute) {
 			od_asprintf(&filter, "(%s=%s)",
 				    serv->endpoint->ldapsearchattribute,
-				    route->rule->user_name);
+				    client->startup.user.value);
 		} else {
 			od_asprintf(&filter, "(uid=%s)",
-				    route->rule->user_name);
+				    client->startup.user.value);
 		}
 
 		rc = ldap_search_s(serv->conn, serv->endpoint->ldapbasedn,
@@ -162,8 +162,7 @@ static inline od_retcode_t od_ldap_server_prepare(od_logger_t *logger,
 
 		count = ldap_count_entries(serv->conn, search_message);
 		od_debug(logger, "auth_ldap", NULL, NULL,
-			 "basedn search msg: %s, count: %d", search_message,
-			 count);
+			 "basedn search entries count: %d", count);
 		if (count != 1) {
 			if (count == 0) {
 				// TODO: report err 2 client
@@ -193,7 +192,7 @@ static inline od_retcode_t od_ldap_server_prepare(od_logger_t *logger,
 			    serv->endpoint->ldapprefix ?
 				    serv->endpoint->ldapprefix :
 				    "",
-			    route->rule->user_name,
+			    client->startup.user.value,
 			    serv->endpoint->ldapsuffix ?
 				    serv->endpoint->ldapsuffix :
 				    "");
@@ -216,7 +215,8 @@ od_ldap_server_t *od_ldap_server_allocate()
 
 static inline od_retcode_t od_ldap_server_init(od_logger_t *logger,
 					       od_ldap_server_t *server,
-					       od_route_t *route)
+					       od_route_t *route,
+					       od_client_t *client)
 {
 	od_id_generate(&server->id, "ls");
 	od_list_init(&server->link);
@@ -231,7 +231,7 @@ static inline od_retcode_t od_ldap_server_init(od_logger_t *logger,
 		return NOT_OK_RESPONSE;
 	}
 
-	if (od_ldap_server_prepare(logger, server, route) != OK_RESPONSE) {
+	if (od_ldap_server_prepare(logger, server, client) != OK_RESPONSE) {
 		return NOT_OK_RESPONSE;
 	}
 	return OK_RESPONSE;
@@ -282,7 +282,8 @@ static inline od_ldap_server_t *od_ldap_server_attach(od_route_t *route,
 			/* special case, when we are interested only in an idle connection
 			 * and do not want to start a new one */
 			// NOT IMPL
-			return NOT_OK_RESPONSE;
+			od_route_unlock(route);
+			return NULL;
 		} else {
 			/* Maybe start new connection, if pool_size is zero */
 			/* Maybe start new connection, if we still have capacity for it */
@@ -315,7 +316,7 @@ static inline od_ldap_server_t *od_ldap_server_attach(od_route_t *route,
 		rc = od_route_wait(route, timeout);
 
 		if (rc == -1) {
-			return OD_ROUTER_ERROR_TIMEDOUT;
+			return NULL;
 		}
 
 		od_route_lock(route);
@@ -328,7 +329,8 @@ static inline od_ldap_server_t *od_ldap_server_attach(od_route_t *route,
 		/* create new server object */
 		server = od_ldap_server_allocate();
 
-		int ldap_rc = od_ldap_server_init(logger, server, route);
+		int ldap_rc =
+			od_ldap_server_init(logger, server, route, client);
 
 		od_route_lock(route);
 		od_ldap_server_pool_set(&route->ldap_pool, server,
@@ -423,6 +425,9 @@ od_retcode_t od_ldap_conn_close(od_attribute_unused() od_route_t *route,
 od_ldap_endpoint_t *od_ldap_endpoint_alloc()
 {
 	od_ldap_endpoint_t *le = malloc(sizeof(od_ldap_endpoint_t));
+	if (le == NULL) {
+		return NULL;
+	}
 	od_list_init(&le->link);
 
 	le->name = NULL;
@@ -474,14 +479,10 @@ od_retcode_t od_ldap_endpoint_free(od_ldap_endpoint_t *le)
 	if (le->ldapsearchattribute) {
 		free(le->ldapsearchattribute);
 	}
-
 	if (le->ldapscope) {
 		free(le->ldapscope);
 	}
 	if (le->ldapbasedn) {
-		free(le->ldapbasedn);
-	}
-	if (le->ldapbinddn) {
 		free(le->ldapbasedn);
 	}
 	// preparsed connect url
@@ -492,6 +493,8 @@ od_retcode_t od_ldap_endpoint_free(od_ldap_endpoint_t *le)
 	od_list_unlink(&le->link);
 
 	free(le);
+
+	return OK_RESPONSE;
 }
 
 od_retcode_t od_ldap_endpoint_add(od_ldap_endpoint_t *ldaps,

@@ -45,7 +45,9 @@ Each defined pool can have separate authentication, pooling mode and limits sett
 #### Authentication
 
 Odyssey has full-featured `SSL/TLS` support and common authentication methods
-like: `md5` and `clear text` both for client and server authentication.
+like: `md5` and `clear text` both for client and server authentication. 
+Odyssey supports PAM & LDAP authentication, this methods operates similarly to `clear text` auth except that it uses 
+PAM/LDAP to validate user name/password pairs. PAM optionally checks the connected remote host name or IP address.
 Additionally it allows to block each pool user separately.
 
 #### Logging
@@ -54,6 +56,10 @@ Odyssey generates universally unique identifiers `uuid` for client and server co
 Any log events and client error responses include the id, which then can be used to
 uniquely identify client and track actions. Odyssey can save log events into log file and
 using system logger.
+
+### CLI
+
+Odyssey supports multiple command line options. Use `/path/to/odyssey` --help to see more
 
 #### Architecture and internals
 
@@ -188,6 +194,7 @@ Set up your CLion to build project in container, [manual](https://github.com/shu
 * [storage\_db](documentation/configuration.md#storage-string)
 * [storage\_user](documentation/configuration.md#storage-string)
 * [storage\_password](documentation/configuration.md#storage-string)
+* [password\_passthrough](documentation/configuration.md#storage-string)
 * [pool](documentation/configuration.md#pool-string)
 * [pool\_size](documentation/configuration.md#pool_size-integer)
 * [pool\_timeout](documentation/configuration.md#pool_timeout-integer)

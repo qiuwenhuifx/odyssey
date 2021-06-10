@@ -97,6 +97,7 @@ enum { OD_LYES,
        OD_LAUTH_QUERY_DB,
        OD_LAUTH_QUERY_USER,
        OD_LAUTH_LDAP_SERVICE,
+       OD_LAUTH_PASSWORD_PASSTHROUGH,
        OD_LQUANTILES,
        OD_LMODULE,
        OD_LLDAP_ENDPOINT,
@@ -223,7 +224,7 @@ static od_keyword_t od_config_keywords[] = {
 	od_keyword("auth_query_user", OD_LAUTH_QUERY_USER),
 	od_keyword("auth_pam_service", OD_LAUTH_PAM_SERVICE),
 	od_keyword("auth_module", OD_LAUTH_MODULE),
-	od_keyword("quantiles", OD_LQUANTILES),
+	od_keyword("password_passthrough", OD_LAUTH_PASSWORD_PASSTHROUGH),
 	od_keyword("load_module", OD_LMODULE),
 
 	/* ldap */
@@ -241,6 +242,9 @@ static od_keyword_t od_config_keywords[] = {
 	od_keyword("ldapfilter", OD_LLDAP_FILTER),
 	od_keyword("ldapscope", OD_LLDAP_SCOPE),
 	od_keyword("ldap_endpoint_name", OD_LLDAP_ENDPOINT_NAME),
+
+	/* stats */
+	od_keyword("quantiles", OD_LQUANTILES),
 	{ 0, 0, 0 }
 };
 
@@ -263,20 +267,35 @@ static int od_config_reader_open(od_config_reader_t *reader, char *config_file)
 	if (config_buf == NULL)
 		goto error;
 	int rc = fread(config_buf, size, 1, file);
-	fclose(file);
 	if (rc != 1) {
 		free(config_buf);
 		goto error;
 	}
+	switch (fclose(file)) {
+	case 0: {
+		reader->data = config_buf;
+		reader->data_size = size;
 
-	reader->data = config_buf;
-	reader->data_size = size;
+		od_parser_init(&reader->parser, reader->data,
+			       reader->data_size);
+		return 0;
+	}
+	case EOF: {
+		od_errorf(reader->error, "failed to close config file '%s': %d",
+			  config_file, errno);
+		free(config_buf);
+		return -1;
+	}
+	default:
+		assert(0);
+	}
 
-	od_parser_init(&reader->parser, reader->data, reader->data_size);
-	return 0;
 error:
 	od_errorf(reader->error, "failed to open config file '%s'",
 		  config_file);
+	if (file) {
+		fclose(file);
+	}
 	return -1;
 }
 
@@ -589,6 +608,7 @@ static int od_config_reader_storage(od_config_reader_t *reader)
 					       "unknown parameter");
 			return -1;
 		}
+
 		switch (keyword->id) {
 		/* type */
 		case OD_LTYPE:
@@ -759,7 +779,7 @@ static int od_config_reader_route(od_config_reader_t *reader, char *db_name,
 			if (!od_config_reader_string(reader, &rule->auth))
 				return -1;
 #ifndef USE_SCRAM
-			if (rule->auth == "scram-sha-256") {
+			if (strcmp(rule->auth, "scram-sha-256") == 0) {
 				od_config_reader_error(
 					reader, &token,
 					"SCRAM auth is not supported in this build, try to recompile");
@@ -792,12 +812,14 @@ static int od_config_reader_route(od_config_reader_t *reader, char *db_name,
 						     &rule->auth_module))
 				return -1;
 			break;
+#ifdef PAM_FOUND
 		/* auth_pam_service */
 		case OD_LAUTH_PAM_SERVICE:
 			if (!od_config_reader_string(reader,
 						     &rule->auth_pam_service))
 				return -1;
 			break;
+#endif
 		/* auth_query */
 		case OD_LAUTH_QUERY:
 			if (!od_config_reader_string(reader, &rule->auth_query))
@@ -813,6 +835,12 @@ static int od_config_reader_route(od_config_reader_t *reader, char *db_name,
 		case OD_LAUTH_QUERY_USER:
 			if (!od_config_reader_string(reader,
 						     &rule->auth_query_user))
+				return -1;
+			break;
+		/* auth_query_user */
+		case OD_LAUTH_PASSWORD_PASSTHROUGH:
+			if (!od_config_reader_yes_no(
+				    reader, &rule->enable_password_passthrough))
 				return -1;
 			break;
 		/* password */
@@ -1015,22 +1043,25 @@ od_config_reader_ldap_endpoint(od_config_reader_t *reader,
 {
 	od_ldap_endpoint_t *ldap_current;
 	ldap_current = od_ldap_endpoint_alloc();
+	if (!ldap_current) {
+		goto error;
+	}
 
 	/* name */
 	if (!od_config_reader_string(reader, &ldap_current->name)) {
-		return NOT_OK_RESPONSE;
+		goto error;
 	}
 
 	if (od_ldap_endpoint_find(ldaps, ldap_current->name) != NULL) {
 		od_config_reader_error(reader, NULL,
 				       "duplicate ldap endpoint definition: %s",
 				       ldap_current->name);
-		return NOT_OK_RESPONSE;
+		goto error;
 	}
 
 	/* { */
 	if (!od_config_reader_symbol(reader, '{')) {
-		return NOT_OK_RESPONSE;
+		goto error;
 	}
 
 	for (;;) {
@@ -1049,70 +1080,75 @@ od_config_reader_ldap_endpoint(od_config_reader_t *reader,
 		default:
 			od_config_reader_error(reader, &token,
 					       "unexpected symbol or token");
-			return NOT_OK_RESPONSE;
+			goto error;
 		}
 		od_keyword_t *keyword;
 		keyword = od_keyword_match(od_config_keywords, &token);
+		if (keyword == NULL) {
+			od_config_reader_error(reader, &token,
+					       "unknown parameter");
+			return -1;
+		}
 
 		switch (keyword->id) {
 		case OD_LLDAP_SERVER: {
 			if (!od_config_reader_string(reader,
 						     &ldap_current->ldapserver))
-				return NOT_OK_RESPONSE;
+				goto error;
 
 		} break;
 		case OD_LLDAP_PORT: {
 			if (!od_config_reader_number64(reader,
 						       &ldap_current->ldapport))
-				return NOT_OK_RESPONSE;
+				goto error;
 
 		} break;
 		case OD_LLDAP_PREFIX: {
 			if (!od_config_reader_string(reader,
 						     &ldap_current->ldapprefix))
-				return NOT_OK_RESPONSE;
+				goto error;
 
 		} break;
 		case OD_LLDAP_SUFFIX: {
 			if (!od_config_reader_string(reader,
 						     &ldap_current->ldapsuffix))
-				return NOT_OK_RESPONSE;
+				goto error;
 
 		} break;
 		case OD_LLDAP_SEARCH_ATTRIBUTE: {
 			if (!od_config_reader_string(
 				    reader, &ldap_current->ldapsearchattribute))
-				return NOT_OK_RESPONSE;
+				goto error;
 
 		} break;
 		case OD_LLDAP_SCOPE: {
 			if (!od_config_reader_string(reader,
 						     &ldap_current->ldapscope))
-				return NOT_OK_RESPONSE;
+				goto error;
 
 		} break;
 		case OD_LLDAP_SCHEME: {
 			if (!od_config_reader_string(reader,
 						     &ldap_current->ldapscheme))
-				return NOT_OK_RESPONSE;
+				goto error;
 
 		} break;
 		case OD_LLDAP_BASEDN: {
 			if (!od_config_reader_string(reader,
 						     &ldap_current->ldapbasedn))
-				return NOT_OK_RESPONSE;
+				goto error;
 
 		} break;
 		case OD_LLDAP_BINDDN: {
 			if (!od_config_reader_string(reader,
 						     &ldap_current->ldapbinddn))
-				return NOT_OK_RESPONSE;
+				goto error;
 
 		} break;
 		case OD_LLDAP_BIND_PASSWD: {
 			if (!od_config_reader_string(
 				    reader, &ldap_current->ldapbindpasswd))
-				return NOT_OK_RESPONSE;
+				goto error;
 
 		} break;
 		}
@@ -1122,16 +1158,21 @@ init:
 	if (od_ldap_endpoint_prepare(ldap_current) != OK_RESPONSE) {
 		od_config_reader_error(reader, NULL,
 				       "failed to initialize ldap endpoint");
-		return NOT_OK_RESPONSE;
+		goto error;
 	}
 	if (od_ldap_endpoint_add(ldaps, ldap_current) != OK_RESPONSE) {
 		od_config_reader_error(reader, NULL,
 				       "failed to initialize ldap endpoint");
-		return NOT_OK_RESPONSE;
+		goto error;
 	}
 
 	/* unreach */
 	return OK_RESPONSE;
+error:
+	if (ldap_current) {
+		od_ldap_endpoint_free(ldap_current);
+	}
+	return NOT_OK_RESPONSE;
 }
 #endif
 
@@ -1531,12 +1572,29 @@ static int od_config_reader_parse(od_config_reader_t *reader,
 			}
 			continue;
 		/* workers */
-		case OD_LWORKERS:
-			if (!od_config_reader_number(reader,
-						     &config->workers)) {
+		case OD_LWORKERS: {
+			od_token_t tok;
+			int rc;
+			rc = od_parser_next(&reader->parser, &tok);
+			switch (rc) {
+			case OD_PARSER_NUM: {
+				config->workers = tok.value.num;
+			} break;
+			case OD_PARSER_STRING: {
+				if (strncmp(tok.value.string.pointer, "auto",
+					    tok.value.string.size) == 0) {
+					config->workers =
+						(1 + od_get_ncpu()) >> 1;
+					break;
+				} /* else fallthrough default*/
+			}
+			default:
+				od_config_reader_error(
+					reader, &tok,
+					"expected 'number' or '\"auto\"'");
 				goto error;
 			}
-
+		}
 			continue;
 		/* resolvers */
 		case OD_LRESOLVERS:
