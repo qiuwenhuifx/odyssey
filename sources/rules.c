@@ -15,7 +15,9 @@
 void od_rules_init(od_rules_t *rules)
 {
 	od_list_init(&rules->storages);
+#ifdef LDAP_FOUND
 	od_list_init(&rules->ldap_endpoints);
+#endif
 	od_list_init(&rules->rules);
 }
 
@@ -65,12 +67,14 @@ void od_rules_storage_free(od_rule_storage_t *storage)
 	free(storage);
 }
 
+#ifdef LDAP_FOUND
 od_ldap_endpoint_t *od_rules_ldap_endpoint_add(od_rules_t *rules,
 					       od_ldap_endpoint_t *ldap)
 {
 	od_list_append(&rules->ldap_endpoints, &ldap->link);
 	return ldap;
 }
+#endif
 
 od_rule_storage_t *od_rules_storage_add(od_rules_t *rules,
 					od_rule_storage_t *storage)
@@ -596,8 +600,80 @@ __attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src,
 		count_mark++;
 	}
 
-	/* select new rules */
+	/* select dropped rules */
 	od_list_t *n;
+	od_list_foreach_safe(&rules->rules, i, n)
+	{
+		od_rule_t *rule_old;
+		rule_old = od_container_of(i, od_rule_t, link);
+
+		int ok = 0;
+
+		od_list_t *m;
+		od_list_t *j;
+		od_list_foreach_safe(&src->rules, j, m)
+		{
+			od_rule_t *rule_new;
+			rule_new = od_container_of(j, od_rule_t, link);
+			if (strcmp(rule_old->user_name, rule_new->user_name) ==
+				    0 &&
+			    strcmp(rule_old->db_name, rule_new->db_name) == 0) {
+				ok = 1;
+				break;
+			}
+		}
+
+		if (!ok) {
+			od_rule_key_t *rk = malloc(sizeof(od_rule_key_t));
+
+			od_rule_key_init(rk);
+
+			rk->usr_name = strndup(rule_old->user_name,
+					       rule_old->user_name_len);
+			rk->db_name = strndup(rule_old->db_name,
+					      rule_old->db_name_len);
+
+			od_list_append(deleted, &rk->link);
+		}
+	};
+
+	/* select added rules */
+	od_list_foreach_safe(&src->rules, i, n)
+	{
+		od_rule_t *rule_new;
+		rule_new = od_container_of(i, od_rule_t, link);
+
+		int ok = 0;
+
+		od_list_t *m;
+		od_list_t *j;
+		od_list_foreach_safe(&rules->rules, j, m)
+		{
+			od_rule_t *rule_old;
+			rule_old = od_container_of(j, od_rule_t, link);
+			if (strcmp(rule_old->user_name, rule_new->user_name) ==
+				    0 &&
+			    strcmp(rule_old->db_name, rule_new->db_name) == 0) {
+				ok = 1;
+				break;
+			}
+		}
+
+		if (!ok) {
+			od_rule_key_t *rk = malloc(sizeof(od_rule_key_t));
+
+			od_rule_key_init(rk);
+
+			rk->usr_name = strndup(rule_new->user_name,
+					       rule_new->user_name_len);
+			rk->db_name = strndup(rule_new->db_name,
+					      rule_new->db_name_len);
+
+			od_list_append(added, &rk->link);
+		}
+	};
+
+	/* select new rules */
 	od_list_foreach_safe(&src->rules, i, n)
 	{
 		od_rule_t *rule;
@@ -643,9 +719,7 @@ __attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src,
 			rule->obsolete = is_obsolete;
 
 			if (is_obsolete && rule->refs == 0) {
-				od_list_unlink(&rule->link);
-				od_list_init(&rule->link);
-				od_list_append(deleted, &rule->link);
+				od_rules_rule_free(rule);
 				count_deleted++;
 				count_mark--;
 			}
@@ -857,7 +931,9 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 		od_rules_storage_free(storage);
 	}
 	od_list_init(&rules->storages);
+#ifdef LDAP_FOUND
 	od_list_init(&rules->ldap_endpoints);
+#endif
 	return 0;
 }
 
@@ -942,11 +1018,13 @@ void od_rules_print(od_rules_t *rules, od_logger_t *logger)
 		       "  reserve_session_server_connection %s",
 		       od_rules_yes_no(
 			       rule->reserve_session_server_connection));
+#ifdef LDAP_FOUND
 		if (rule->ldap_endpoint_name) {
 			od_log(logger, "rules", NULL, NULL,
 			       "  ldap_endpoint_name                %s",
 			       rule->ldap_endpoint_name);
 		}
+#endif
 		od_log(logger, "rules", NULL, NULL,
 		       "  storage                           %s",
 		       rule->storage_name);
