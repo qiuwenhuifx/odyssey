@@ -8,12 +8,10 @@
 #include <kiwi.h>
 #include <machinarium.h>
 #include <odyssey.h>
-#ifdef PAM_FOUND
-#include <pam.h>
-#endif
 
 void od_rules_init(od_rules_t *rules)
 {
+	pthread_mutex_init(&rules->mu, NULL);
 	od_list_init(&rules->storages);
 #ifdef LDAP_FOUND
 	od_list_init(&rules->ldap_endpoints);
@@ -25,6 +23,7 @@ void od_rules_rule_free(od_rule_t *);
 
 void od_rules_free(od_rules_t *rules)
 {
+	pthread_mutex_destroy(&rules->mu);
 	od_list_t *i, *n;
 	od_list_foreach_safe(&rules->rules, i, n)
 	{
@@ -32,39 +31,6 @@ void od_rules_free(od_rules_t *rules)
 		rule = od_container_of(i, od_rule_t, link);
 		od_rules_rule_free(rule);
 	}
-}
-
-od_rule_storage_t *od_rules_storage_allocate(void)
-{
-	od_rule_storage_t *storage;
-	storage = (od_rule_storage_t *)malloc(sizeof(*storage));
-	if (storage == NULL)
-		return NULL;
-	memset(storage, 0, sizeof(*storage));
-	od_list_init(&storage->link);
-	return storage;
-}
-
-void od_rules_storage_free(od_rule_storage_t *storage)
-{
-	if (storage->name)
-		free(storage->name);
-	if (storage->type)
-		free(storage->type);
-	if (storage->host)
-		free(storage->host);
-	if (storage->tls)
-		free(storage->tls);
-	if (storage->tls_ca_file)
-		free(storage->tls_ca_file);
-	if (storage->tls_key_file)
-		free(storage->tls_key_file);
-	if (storage->tls_cert_file)
-		free(storage->tls_cert_file);
-	if (storage->tls_protocols)
-		free(storage->tls_protocols);
-	od_list_unlink(&storage->link);
-	free(storage);
 }
 
 #ifdef LDAP_FOUND
@@ -96,56 +62,26 @@ od_rule_storage_t *od_rules_storage_match(od_rules_t *rules, char *name)
 	return NULL;
 }
 
-od_rule_storage_t *od_rules_storage_copy(od_rule_storage_t *storage)
+od_retcode_t od_rules_storages_watchdogs_run(od_logger_t *logger,
+					     od_rules_t *rules)
 {
-	od_rule_storage_t *copy;
-	copy = od_rules_storage_allocate();
-	if (copy == NULL)
-		return NULL;
-	copy->storage_type = storage->storage_type;
-	copy->name = strdup(storage->name);
-	copy->server_max_routing = storage->server_max_routing;
-	if (copy->name == NULL)
-		goto error;
-	copy->type = strdup(storage->type);
-	if (copy->type == NULL)
-		goto error;
-	if (storage->host) {
-		copy->host = strdup(storage->host);
-		if (copy->host == NULL)
-			goto error;
+	od_list_t *i;
+	od_list_foreach(&rules->storages, i)
+	{
+		od_rule_storage_t *storage;
+		storage = od_container_of(i, od_rule_storage_t, link);
+		if (storage->watchdog) {
+			int64_t coroutine_id;
+			coroutine_id = machine_coroutine_create(
+				od_storage_watchdog_watch, storage->watchdog);
+			if (coroutine_id == INVALID_COROUTINE_ID) {
+				od_error(logger, "system", NULL, NULL,
+					 "failed to start watchdog coroutine");
+				return NOT_OK_RESPONSE;
+			}
+		}
 	}
-	copy->port = storage->port;
-	copy->tls_mode = storage->tls_mode;
-	if (storage->tls) {
-		copy->tls = strdup(storage->tls);
-		if (copy->tls == NULL)
-			goto error;
-	}
-	if (storage->tls_ca_file) {
-		copy->tls_ca_file = strdup(storage->tls_ca_file);
-		if (copy->tls_ca_file == NULL)
-			goto error;
-	}
-	if (storage->tls_key_file) {
-		copy->tls_key_file = strdup(storage->tls_key_file);
-		if (copy->tls_key_file == NULL)
-			goto error;
-	}
-	if (storage->tls_cert_file) {
-		copy->tls_cert_file = strdup(storage->tls_cert_file);
-		if (copy->tls_cert_file == NULL)
-			goto error;
-	}
-	if (storage->tls_protocols) {
-		copy->tls_protocols = strdup(storage->tls_protocols);
-		if (copy->tls_protocols == NULL)
-			goto error;
-	}
-	return copy;
-error:
-	od_rules_storage_free(copy);
-	return NULL;
+	return OK_RESPONSE;
 }
 
 od_rule_auth_t *od_rules_auth_add(od_rule_t *rule)
@@ -189,17 +125,18 @@ od_rule_t *od_rules_add(od_rules_t *rules)
 		return NULL;
 	memset(rule, 0, sizeof(*rule));
 	/* pool */
-	rule->pool_size = 0;
-	rule->pool_timeout = 0;
-	rule->pool_discard = 1;
-	rule->pool_cancel = 1;
-	rule->pool_rollback = 1;
-	rule->pool_client_idle_timeout = 0;
-	rule->pool_idle_in_transaction_timeout = 0;
+	rule->pool = od_rule_pool_alloc();
+	if (rule->pool == NULL) {
+		free(rule);
+		return NULL;
+	}
+
+	rule->user_role = OD_RULE_ROLE_UNDEF;
 
 	rule->obsolete = 0;
 	rule->mark = 0;
 	rule->refs = 0;
+
 	rule->auth_common_name_default = 0;
 	rule->auth_common_names_count = 0;
 	rule->server_lifetime_us = 3600 * 1000000L;
@@ -207,14 +144,20 @@ od_rule_t *od_rules_add(od_rules_t *rules)
 #ifdef PAM_FOUND
 	rule->auth_pam_data = od_pam_auth_data_create();
 #endif
+
 #ifdef LDAP_FOUND
 	rule->ldap_endpoint_name = NULL;
 	rule->ldap_endpoint = NULL;
 #endif
+
+	kiwi_vars_init(&rule->vars);
+
 	rule->enable_password_passthrough = 0;
+
 	od_list_init(&rule->auth_common_names);
 	od_list_init(&rule->link);
 	od_list_append(&rules->rules, &rule->link);
+
 	rule->quantiles = NULL;
 	return rule;
 }
@@ -245,8 +188,9 @@ void od_rules_rule_free(od_rule_t *rule)
 		free(rule->storage_user);
 	if (rule->storage_password)
 		free(rule->storage_password);
-	if (rule->pool_sz)
-		free(rule->pool_sz);
+	if (rule->pool)
+		od_rule_pool_free(rule->pool);
+
 	od_list_t *i, *n;
 	od_list_foreach_safe(&rule->auth_common_names, i, n)
 	{
@@ -378,39 +322,43 @@ static inline int od_rules_storage_compare(od_rule_storage_t *a,
 	if (a->port != b->port)
 		return 0;
 
-	/* tls_mode */
-	if (a->tls_mode != b->tls_mode)
+	/* tls_opts->tls_mode */
+	if (a->tls_opts->tls_mode != b->tls_opts->tls_mode)
 		return 0;
 
-	/* tls_ca_file */
-	if (a->tls_ca_file && b->tls_ca_file) {
-		if (strcmp(a->tls_ca_file, b->tls_ca_file) != 0)
+	/* tls_opts->tls_ca_file */
+	if (a->tls_opts->tls_ca_file && b->tls_opts->tls_ca_file) {
+		if (strcmp(a->tls_opts->tls_ca_file,
+			   b->tls_opts->tls_ca_file) != 0)
 			return 0;
-	} else if (a->tls_ca_file || b->tls_ca_file) {
-		return 0;
-	}
-
-	/* tls_key_file */
-	if (a->tls_key_file && b->tls_key_file) {
-		if (strcmp(a->tls_key_file, b->tls_key_file) != 0)
-			return 0;
-	} else if (a->tls_key_file || b->tls_key_file) {
+	} else if (a->tls_opts->tls_ca_file || b->tls_opts->tls_ca_file) {
 		return 0;
 	}
 
-	/* tls_cert_file */
-	if (a->tls_cert_file && b->tls_cert_file) {
-		if (strcmp(a->tls_cert_file, b->tls_cert_file) != 0)
+	/* tls_opts->tls_key_file */
+	if (a->tls_opts->tls_key_file && b->tls_opts->tls_key_file) {
+		if (strcmp(a->tls_opts->tls_key_file,
+			   b->tls_opts->tls_key_file) != 0)
 			return 0;
-	} else if (a->tls_cert_file || b->tls_cert_file) {
+	} else if (a->tls_opts->tls_key_file || b->tls_opts->tls_key_file) {
 		return 0;
 	}
 
-	/* tls_protocols */
-	if (a->tls_protocols && b->tls_protocols) {
-		if (strcmp(a->tls_protocols, b->tls_protocols) != 0)
+	/* tls_opts->tls_cert_file */
+	if (a->tls_opts->tls_cert_file && b->tls_opts->tls_cert_file) {
+		if (strcmp(a->tls_opts->tls_cert_file,
+			   b->tls_opts->tls_cert_file) != 0)
 			return 0;
-	} else if (a->tls_protocols || b->tls_protocols) {
+	} else if (a->tls_opts->tls_cert_file || b->tls_opts->tls_cert_file) {
+		return 0;
+	}
+
+	/* tls_opts->tls_protocols */
+	if (a->tls_opts->tls_protocols && b->tls_opts->tls_protocols) {
+		if (strcmp(a->tls_opts->tls_protocols,
+			   b->tls_opts->tls_protocols) != 0)
+			return 0;
+	} else if (a->tls_opts->tls_protocols || b->tls_opts->tls_protocols) {
 		return 0;
 	}
 
@@ -434,6 +382,10 @@ int od_rules_rule_compare(od_rule_t *a, od_rule_t *b)
 	} else if (a->password || b->password) {
 		return 0;
 	}
+
+	/* role */
+	if (a->user_role != b->user_role)
+		return 0;
 
 	/* quantiles changed */
 	if (a->quantiles_count == b->quantiles_count) {
@@ -522,45 +474,6 @@ int od_rules_rule_compare(od_rule_t *a, od_rule_t *b)
 		return 0;
 	}
 
-	/* pool */
-	if (a->pool != b->pool)
-		return 0;
-
-	/* pool_size */
-	if (a->pool_size != b->pool_size)
-		return 0;
-
-	/* pool_timeout */
-	if (a->pool_timeout != b->pool_timeout)
-		return 0;
-
-	/* pool_ttl */
-	if (a->pool_ttl != b->pool_ttl)
-		return 0;
-
-	/* pool_discard */
-	if (a->pool_discard != b->pool_discard)
-		return 0;
-
-	/* pool_cancel */
-	if (a->pool_cancel != b->pool_cancel)
-		return 0;
-
-	/* pool_rollback*/
-	if (a->pool_rollback != b->pool_rollback)
-		return 0;
-
-	/* pool client idle timeout */
-	if (a->pool_client_idle_timeout != b->pool_client_idle_timeout) {
-		return 0;
-	}
-
-	/* pool_idle_in_transaction_timeout */
-	if (a->pool_idle_in_transaction_timeout !=
-	    b->pool_idle_in_transaction_timeout) {
-		return 0;
-	}
-
 	/* client_fwd_error */
 	if (a->client_fwd_error != b->client_fwd_error)
 		return 0;
@@ -568,6 +481,14 @@ int od_rules_rule_compare(od_rule_t *a, od_rule_t *b)
 	/* reserve_session_server_connection */
 	if (a->reserve_session_server_connection !=
 	    b->reserve_session_server_connection) {
+		return 0;
+	}
+
+	if (a->catchup_timeout != b->catchup_timeout) {
+		return 0;
+	}
+
+	if (a->catchup_checks != b->catchup_checks) {
 		return 0;
 	}
 
@@ -583,8 +504,18 @@ int od_rules_rule_compare(od_rule_t *a, od_rule_t *b)
 	return 1;
 }
 
+int od_rules_rule_compare_to_drop(od_rule_t *a, od_rule_t *b)
+{
+	/* role */
+	if (a->user_role < b->user_role)
+		return 0;
+
+	return 1;
+}
+
 __attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src,
-					od_list_t *added, od_list_t *deleted)
+					od_list_t *added, od_list_t *deleted,
+					od_list_t *to_drop)
 {
 	int count_mark = 0;
 	int count_deleted = 0;
@@ -688,6 +619,19 @@ __attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src,
 				origin->mark = 0;
 				count_mark--;
 				continue;
+				/* select rules with changes what needed disconnect */
+			} else if (!od_rules_rule_compare_to_drop(origin,
+								  rule)) {
+				od_rule_key_t *rk =
+					malloc(sizeof(od_rule_key_t));
+
+				od_rule_key_init(rk);
+
+				rk->usr_name = strndup(origin->user_name,
+						       origin->user_name_len);
+				rk->db_name = strndup(origin->db_name,
+						      origin->db_name_len);
+				od_list_append(to_drop, &rk->link);
 			}
 
 			/* add new version, origin version still exists */
@@ -729,6 +673,75 @@ __attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src,
 	return count_new + count_mark + count_deleted;
 }
 
+int od_pool_validate(od_logger_t *logger, od_rule_pool_t *pool, char *db_name,
+		     char *user_name)
+{
+	/* pooling mode */
+	if (!pool->type) {
+		od_error(logger, "rules", NULL, NULL,
+			 "rule '%s.%s': pooling mode is not set", db_name,
+			 user_name);
+		return NOT_OK_RESPONSE;
+	}
+	if (strcmp(pool->type, "session") == 0) {
+		pool->pool = OD_RULE_POOL_SESSION;
+	} else if (strcmp(pool->type, "transaction") == 0) {
+		pool->pool = OD_RULE_POOL_TRANSACTION;
+	} else if (strcmp(pool->type, "statement") == 0) {
+		pool->pool = OD_RULE_POOL_STATEMENT;
+	} else {
+		od_error(logger, "rules", NULL, NULL,
+			 "rule '%s.%s': unknown pooling mode", db_name,
+			 user_name);
+		return NOT_OK_RESPONSE;
+	}
+
+	pool->routing = OD_RULE_POOL_CLIENT_VISIBLE;
+	if (!pool->routing_type) {
+		od_debug(
+			logger, "rules", NULL, NULL,
+			"rule '%s.%s': pool routing mode is not set, assuming \"client_visible\" by default",
+			db_name, user_name);
+	} else if (strcmp(pool->routing_type, "internal") == 0) {
+		pool->routing = OD_RULE_POOL_INTERVAL;
+	} else if (strcmp(pool->routing_type, "client_visible") == 0) {
+		pool->routing = OD_RULE_POOL_CLIENT_VISIBLE;
+	} else {
+		od_error(logger, "rules", NULL, NULL,
+			 "rule '%s.%s': unknown pool routing mode", db_name,
+			 user_name);
+		return NOT_OK_RESPONSE;
+	}
+
+	// reserve prepare statemetn feature
+	if (pool->reserve_prepared_statement &&
+	    pool->pool == OD_RULE_POOL_SESSION) {
+		od_error(
+			logger, "rules", NULL, NULL,
+			"rule '%s.%s': prepared statements support in session pool makes no sence",
+			db_name, user_name);
+		return NOT_OK_RESPONSE;
+	}
+
+	if (pool->reserve_prepared_statement && pool->discard) {
+		od_error(
+			logger, "rules", NULL, NULL,
+			"rule '%s.%s': pool discard is forbidden when using prepared statements support",
+			db_name, user_name);
+		return NOT_OK_RESPONSE;
+	}
+
+	if (pool->smart_discard && !pool->reserve_prepared_statement) {
+		od_error(
+			logger, "rules", NULL, NULL,
+			"rule '%s.%s': pool smart discard is forbidden without using prepared statements support",
+			db_name, user_name);
+		return NOT_OK_RESPONSE;
+	}
+
+	return OK_RESPONSE;
+}
+
 int od_rules_validate(od_rules_t *rules, od_config_t *config,
 		      od_logger_t *logger)
 {
@@ -767,20 +780,29 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 				}
 			}
 		}
-		if (storage->tls) {
-			if (strcmp(storage->tls, "disable") == 0) {
-				storage->tls_mode = OD_RULE_TLS_DISABLE;
-			} else if (strcmp(storage->tls, "allow") == 0) {
-				storage->tls_mode = OD_RULE_TLS_ALLOW;
-			} else if (strcmp(storage->tls, "require") == 0) {
-				storage->tls_mode = OD_RULE_TLS_REQUIRE;
-			} else if (strcmp(storage->tls, "verify_ca") == 0) {
-				storage->tls_mode = OD_RULE_TLS_VERIFY_CA;
-			} else if (strcmp(storage->tls, "verify_full") == 0) {
-				storage->tls_mode = OD_RULE_TLS_VERIFY_FULL;
+		if (storage->tls_opts->tls) {
+			if (strcmp(storage->tls_opts->tls, "disable") == 0) {
+				storage->tls_opts->tls_mode =
+					OD_CONFIG_TLS_DISABLE;
+			} else if (strcmp(storage->tls_opts->tls, "allow") ==
+				   0) {
+				storage->tls_opts->tls_mode =
+					OD_CONFIG_TLS_ALLOW;
+			} else if (strcmp(storage->tls_opts->tls, "require") ==
+				   0) {
+				storage->tls_opts->tls_mode =
+					OD_CONFIG_TLS_REQUIRE;
+			} else if (strcmp(storage->tls_opts->tls,
+					  "verify_ca") == 0) {
+				storage->tls_opts->tls_mode =
+					OD_CONFIG_TLS_VERIFY_CA;
+			} else if (strcmp(storage->tls_opts->tls,
+					  "verify_full") == 0) {
+				storage->tls_opts->tls_mode =
+					OD_CONFIG_TLS_VERIFY_FULL;
 			} else {
 				od_error(logger, "rules", NULL, NULL,
-					 "unknown storage tls mode");
+					 "unknown storage tls_opts->tls mode");
 				return -1;
 			}
 		}
@@ -797,8 +819,9 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 			od_error(logger, "rules", NULL, NULL,
 				 "rule '%s.%s': no rule storage is specified",
 				 rule->db_name, rule->user_name);
-			return -1;
+			return NOT_OK_RESPONSE;
 		}
+
 		od_rule_storage_t *storage;
 		storage = od_rules_storage_match(rules, rule->storage_name);
 		if (storage == NULL) {
@@ -806,30 +829,27 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 				 "rule '%s.%s': no rule storage '%s' found",
 				 rule->db_name, rule->user_name,
 				 rule->storage_name);
-			return -1;
+			return NOT_OK_RESPONSE;
 		}
-		rule->storage = od_rules_storage_copy(storage);
-		if (rule->storage == NULL)
-			return -1;
 
-		/* pooling mode */
-		if (!rule->pool_sz) {
-			od_error(logger, "rules", NULL, NULL,
-				 "rule '%s.%s': pooling mode is not set",
-				 rule->db_name, rule->user_name);
-			return -1;
+		rule->storage = od_rules_storage_copy(storage);
+		if (rule->storage == NULL) {
+			return NOT_OK_RESPONSE;
 		}
-		if (strcmp(rule->pool_sz, "session") == 0) {
-			rule->pool = OD_RULE_POOL_SESSION;
-		} else if (strcmp(rule->pool_sz, "transaction") == 0) {
-			rule->pool = OD_RULE_POOL_TRANSACTION;
-		} else if (strcmp(rule->pool_sz, "statement") == 0) {
-			rule->pool = OD_RULE_POOL_STATEMENT;
-		} else {
-			od_error(logger, "rules", NULL, NULL,
-				 "rule '%s.%s': unknown pooling mode",
-				 rule->db_name, rule->user_name);
-			return -1;
+
+		if (od_pool_validate(logger, rule->pool, rule->db_name,
+				     rule->user_name) == NOT_OK_RESPONSE) {
+			return NOT_OK_RESPONSE;
+		}
+
+		if (rule->storage->storage_type != OD_RULE_STORAGE_LOCAL) {
+			if (rule->user_role != OD_RULE_ROLE_UNDEF) {
+				od_error(
+					logger, "rules validate", NULL, NULL,
+					"rule '%s.%s': role set for non-local storage",
+					rule->db_name, rule->user_name);
+				return NOT_OK_RESPONSE;
+			}
 		}
 
 		/* auth */
@@ -847,11 +867,9 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 		} else if (strcmp(rule->auth, "clear_text") == 0) {
 			rule->auth_mode = OD_RULE_AUTH_CLEAR_TEXT;
 
-			if (rule->auth_query != NULL
 #ifdef PAM_FOUND
-			    && rule->auth_pam_service != NULL
-#endif
-			) {
+			if (rule->auth_query != NULL &&
+			    rule->auth_pam_service != NULL) {
 				od_error(
 					logger, "rules", NULL, NULL,
 					"auth query and pam service auth method cannot be "
@@ -859,6 +877,7 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 					rule->db_name, rule->user_name);
 				return -1;
 			}
+#endif
 
 			if (rule->password == NULL && rule->auth_query == NULL
 #ifdef PAM_FOUND
@@ -922,8 +941,13 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 		}
 	}
 
+	return 0;
+}
+
+int od_rules_cleanup(od_rules_t *rules)
+{
 	/* cleanup declarative storages rules data */
-	od_list_t *n;
+	od_list_t *n, *i;
 	od_list_foreach_safe(&rules->storages, i, n)
 	{
 		od_rule_storage_t *storage;
@@ -932,8 +956,19 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 	}
 	od_list_init(&rules->storages);
 #ifdef LDAP_FOUND
+
+	/* TODO: cleanup ldap 
+	od_list_foreach_safe(&rules->storages, i, n)
+	{
+		od_ldap_endpoint_t *endp;
+		storage = od_container_of(i, od_ldap_endpoint_t, link);
+		od_ldap_endpoint_free(endp);
+	}
+	*/
+
 	od_list_init(&rules->ldap_endpoints);
 #endif
+
 	return 0;
 }
 
@@ -945,6 +980,57 @@ static inline char *od_rules_yes_no(int value)
 void od_rules_print(od_rules_t *rules, od_logger_t *logger)
 {
 	od_list_t *i;
+	od_log(logger, "config", NULL, NULL, "storages");
+
+	od_list_foreach(&rules->storages, i)
+	{
+		od_rule_storage_t *storage;
+		storage = od_container_of(i, od_rule_storage_t, link);
+
+		od_log(logger, "storage", NULL, NULL,
+		       "  storage types           %s",
+		       storage->storage_type == OD_RULE_STORAGE_REMOTE ?
+			       "remote" :
+			       "local");
+
+		od_log(logger, "storage", NULL, NULL, "  host          %s",
+		       storage->host ? storage->host : "<unix socket>");
+
+		od_log(logger, "storage", NULL, NULL, "  port          %d",
+		       storage->port);
+
+		if (storage->tls_opts->tls)
+			od_log(logger, "storage", NULL, NULL,
+			       "  tls             %s", storage->tls_opts->tls);
+		if (storage->tls_opts->tls_ca_file)
+			od_log(logger, "storage", NULL, NULL,
+			       "  tls_ca_file     %s",
+			       storage->tls_opts->tls_ca_file);
+		if (storage->tls_opts->tls_key_file)
+			od_log(logger, "storage", NULL, NULL,
+			       "  tls_key_file    %s",
+			       storage->tls_opts->tls_key_file);
+		if (storage->tls_opts->tls_cert_file)
+			od_log(logger, "storage", NULL, NULL,
+			       "  tls_cert_file   %s",
+			       storage->tls_opts->tls_cert_file);
+		if (storage->tls_opts->tls_protocols)
+			od_log(logger, "storage", NULL, NULL,
+			       "  tls_protocols   %s",
+			       storage->tls_opts->tls_protocols);
+		if (storage->watchdog) {
+			if (storage->watchdog->query)
+				od_log(logger, "storage", NULL, NULL,
+				       "  watchdog query   %s",
+				       storage->watchdog->query);
+			if (storage->watchdog->interval)
+				od_log(logger, "storage", NULL, NULL,
+				       "  watchdog interval   %d",
+				       storage->watchdog->interval);
+		}
+		od_log(logger, "storage", NULL, NULL, "");
+	}
+
 	od_list_foreach(&rules->rules, i)
 	{
 		od_rule_t *rule;
@@ -972,7 +1058,7 @@ void od_rules_print(od_rules_t *rules, od_logger_t *logger)
 			       rule->auth_query);
 		if (rule->auth_query_db)
 			od_log(logger, "rules", NULL, NULL,
-			       "  auth_query_db                    %s",
+			       "  auth_query_db                     %s",
 			       rule->auth_query_db);
 		if (rule->auth_query_user)
 			od_log(logger, "rules", NULL, NULL,
@@ -981,35 +1067,50 @@ void od_rules_print(od_rules_t *rules, od_logger_t *logger)
 
 		/* pool  */
 		od_log(logger, "rules", NULL, NULL,
-		       "  pool                              %s", rule->pool_sz);
+		       "  pool                              %s",
+		       rule->pool->type);
 		od_log(logger, "rules", NULL, NULL,
-		       "  pool_size                         %d",
-		       rule->pool_size);
+		       "  pool routing                      %s",
+		       rule->pool->routing_type == NULL ?
+			       "client visible" :
+			       rule->pool->routing_type);
 		od_log(logger, "rules", NULL, NULL,
-		       "  pool_timeout                      %d",
-		       rule->pool_timeout);
+		       "  pool size                         %d",
+		       rule->pool->size);
 		od_log(logger, "rules", NULL, NULL,
-		       "  pool_ttl                          %d",
-		       rule->pool_ttl);
+		       "  pool timeout                      %d",
+		       rule->pool->timeout);
 		od_log(logger, "rules", NULL, NULL,
-		       "  pool_discard                      %s",
-		       rule->pool_discard ? "yes" : "no");
+		       "  pool ttl                          %d",
+		       rule->pool->ttl);
 		od_log(logger, "rules", NULL, NULL,
-		       "  pool_cancel                       %s",
-		       rule->pool_cancel ? "yes" : "no");
+		       "  pool discard                      %s",
+		       rule->pool->discard ? "yes" : "no");
 		od_log(logger, "rules", NULL, NULL,
-		       "  pool_rollback                     %s",
-		       rule->pool_rollback ? "yes" : "no");
+		       "  pool smart discard                %s",
+		       rule->pool->smart_discard ? "yes" : "no");
 		od_log(logger, "rules", NULL, NULL,
-		       "  pool_client_idle_timeout          %d",
-		       rule->pool_client_idle_timeout);
+		       "  pool cancel                       %s",
+		       rule->pool->cancel ? "yes" : "no");
 		od_log(logger, "rules", NULL, NULL,
-		       "  pool_idle_in_transaction_timeout  %d",
-		       rule->pool_idle_in_transaction_timeout);
+		       "  pool rollback                     %s",
+		       rule->pool->rollback ? "yes" : "no");
+		od_log(logger, "rules", NULL, NULL,
+		       "  pool client_idle_timeout          %d",
+		       rule->pool->client_idle_timeout);
+		od_log(logger, "rules", NULL, NULL,
+		       "  pool idle_in_transaction_timeout  %d",
+		       rule->pool->idle_in_transaction_timeout);
+		if (rule->pool->pool != OD_RULE_POOL_SESSION) {
+			od_log(logger, "rules", NULL, NULL,
+			       "  pool prepared statement support  %s",
+			       rule->pool->reserve_prepared_statement ? "yes" :
+									"no");
+		}
 
 		if (rule->client_max_set)
 			od_log(logger, "rules", NULL, NULL,
-			       "  client_max                       %d",
+			       "  client_max                        %d",
 			       rule->client_max);
 		od_log(logger, "rules", NULL, NULL,
 		       "  client_fwd_error                  %s",
@@ -1038,26 +1139,26 @@ void od_rules_print(od_rules_t *rules, od_logger_t *logger)
 		od_log(logger, "rules", NULL, NULL,
 		       "  port                              %d",
 		       rule->storage->port);
-		if (rule->storage->tls)
+		if (rule->storage->tls_opts->tls)
 			od_log(logger, "rules", NULL, NULL,
-			       "  tls                               %s",
-			       rule->storage->tls);
-		if (rule->storage->tls_ca_file)
+			       "  tls_opts->tls                               %s",
+			       rule->storage->tls_opts->tls);
+		if (rule->storage->tls_opts->tls_ca_file)
 			od_log(logger, "rules", NULL, NULL,
-			       "  tls_ca_file                       %s",
-			       rule->storage->tls_ca_file);
-		if (rule->storage->tls_key_file)
+			       "  tls_opts->tls_ca_file                       %s",
+			       rule->storage->tls_opts->tls_ca_file);
+		if (rule->storage->tls_opts->tls_key_file)
 			od_log(logger, "rules", NULL, NULL,
-			       "  tls_key_file                      %s",
-			       rule->storage->tls_key_file);
-		if (rule->storage->tls_cert_file)
+			       "  tls_opts->tls_key_file                      %s",
+			       rule->storage->tls_opts->tls_key_file);
+		if (rule->storage->tls_opts->tls_cert_file)
 			od_log(logger, "rules", NULL, NULL,
-			       "  tls_cert_file                     %s",
-			       rule->storage->tls_cert_file);
-		if (rule->storage->tls_protocols)
+			       "  tls_opts->tls_cert_file                     %s",
+			       rule->storage->tls_opts->tls_cert_file);
+		if (rule->storage->tls_opts->tls_protocols)
 			od_log(logger, "rules", NULL, NULL,
-			       "  tls_protocols                     %s",
-			       rule->storage->tls_protocols);
+			       "  tls_opts->tls_protocols                     %s",
+			       rule->storage->tls_opts->tls_protocols);
 		if (rule->storage_db)
 			od_log(logger, "rules", NULL, NULL,
 			       "  storage_db                        %s",
@@ -1066,12 +1167,23 @@ void od_rules_print(od_rules_t *rules, od_logger_t *logger)
 			od_log(logger, "rules", NULL, NULL,
 			       "  storage_user                      %s",
 			       rule->storage_user);
+		if (rule->catchup_checks)
+			od_log(logger, "rules", NULL, NULL,
+			       "  catchup timeout   %d", rule->catchup_timeout);
+		if (rule->catchup_checks)
+			od_log(logger, "rules", NULL, NULL,
+			       "  catchup timeout   %d", rule->catchup_checks);
+
 		od_log(logger, "rules", NULL, NULL,
 		       "  log_debug                         %s",
 		       od_rules_yes_no(rule->log_debug));
 		od_log(logger, "rules", NULL, NULL,
 		       "  log_query                         %s",
 		       od_rules_yes_no(rule->log_query));
+
+		od_log(logger, "rules", NULL, NULL,
+		       "  options:                         %s", "todo");
+
 		od_log(logger, "rules", NULL, NULL, "");
 	}
 }

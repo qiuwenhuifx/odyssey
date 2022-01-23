@@ -1,4 +1,4 @@
-FROM ubuntu:bionic
+FROM ubuntu:focal
 
 RUN mkdir /root/odys
 
@@ -17,8 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpam0g-dev \
     debhelper debootstrap devscripts make equivs \
     libssl-dev vim valgrind cmake \
-    locales
-
-RUN mkdir -p /pdbuild && mkdir -p /pgbin && mv /root/odys/tmp /pdbuild
+    locales; \
+    apt-get clean autoclean; \
+    apt-get autoremove --yes; \
+    rm -rf /var/lib/{apt,dpkg,cache,log}/
 
 ENTRYPOINT ["/root/odys/docker/dpkg/entrypoint.sh"]

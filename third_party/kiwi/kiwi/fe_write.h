@@ -143,6 +143,30 @@ KIWI_API static inline machine_msg_t *kiwi_fe_write_query(machine_msg_t *msg,
 }
 
 KIWI_API static inline machine_msg_t *
+kiwi_fe_write_parse_description(machine_msg_t *msg, char *operator_name,
+				int operator_len, char *description,
+				int description_len)
+{
+	size_t payload_size = operator_len + description_len;
+
+	uint32_t size = sizeof(kiwi_header_t) + payload_size;
+	int offset = 0;
+	if (msg)
+		offset = machine_msg_size(msg);
+	msg = machine_msg_create_or_advance(msg, size);
+	if (kiwi_unlikely(msg == NULL))
+		return NULL;
+	char *pos;
+	pos = (char *)machine_msg_data(msg) + offset;
+	kiwi_write8(&pos, KIWI_FE_PARSE);
+	kiwi_write32(&pos, sizeof(uint32_t) + payload_size);
+	kiwi_write(&pos, operator_name, operator_len);
+	kiwi_write(&pos, description, description_len);
+
+	return msg;
+}
+
+KIWI_API static inline machine_msg_t *
 kiwi_fe_write_parse(machine_msg_t *msg, char *operator_name, int operator_len,
 		    char *query, int query_len, uint16_t typec, int *typev)
 {
@@ -276,13 +300,14 @@ KIWI_API static inline machine_msg_t *kiwi_fe_write_sync(machine_msg_t *msg)
 	return msg;
 }
 
+// support for mulit-param stmts
 KIWI_API static inline machine_msg_t *
-kiwi_fe_write_auth_query(machine_msg_t *msg, char *query, char *user)
+kiwi_fe_write_prep_stmt(machine_msg_t *msg, char *query, char *param)
 {
 	msg = kiwi_fe_write_parse(msg, "", 1, query, strlen(query) + 1, 0,
 				  NULL);
 	msg = kiwi_fe_write_bind(msg, "", 1, "", 1, 0, NULL, 0, NULL, 1,
-				 (int[]){ strlen(user) }, (char *[]){ user });
+				 (int[]){ strlen(param) }, (char *[]){ param });
 	msg = kiwi_fe_write_describe(msg, 'P', "", 1);
 	msg = kiwi_fe_write_execute(msg, "", 1, 0);
 	msg = kiwi_fe_write_sync(msg);

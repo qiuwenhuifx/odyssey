@@ -22,8 +22,8 @@ jobs:
         fail-fast: false
         matrix:
           # os: [ubuntu-latest, ubuntu-18.04]
-          os : [ubuntu-18.04]
-          compiler: [gcc, clang]
+          os : [ubuntu-20.04]
+          compiler: [gcc]
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -36,7 +36,7 @@ jobs:
         
       
     - name: Format
-      run: ./run-clang-format/run-clang-format.py -r --clang-format-executable clang-format-9 modules sources stress test third_party
+      run: ./run-clang-format/run-clang-format.py -r --clang-format-executable clang-format-10 modules sources stress test third_party
     
     - name: Test
       env:

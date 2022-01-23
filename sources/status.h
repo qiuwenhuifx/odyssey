@@ -13,6 +13,7 @@ typedef enum {
 	OD_SKIP,
 	OD_ATTACH,
 	OD_DETACH,
+	OD_WAIT_SYNC,
 	OD_STOP,
 	OD_EOOM,
 	OD_EATTACH,
@@ -23,6 +24,7 @@ typedef enum {
 	OD_ECLIENT_READ,
 	OD_ECLIENT_WRITE,
 	OD_ESYNC_BROKEN,
+	OD_ECATCHUP_TIMEOUT,
 } od_frontend_status_t;
 
 static inline char *od_frontend_status_to_str(od_frontend_status_t status)
@@ -38,6 +40,8 @@ static inline char *od_frontend_status_to_str(od_frontend_status_t status)
 		return "OD_UNDEF";
 	case OD_DETACH:
 		return "OD_DETACH";
+	case OD_WAIT_SYNC:
+		return "OD_WAIT_SYNC";
 	case OD_STOP:
 		return "OD_STOP";
 	case OD_EOOM:
@@ -58,8 +62,10 @@ static inline char *od_frontend_status_to_str(od_frontend_status_t status)
 		return "OD_ECLIENT_WRITE";
 	case OD_ESYNC_BROKEN:
 		return "OD_ESYNC_BROKEN";
+	case OD_ECATCHUP_TIMEOUT:
+		return "OD_ECATCHUP_TIMEOUT";
 	}
-	return "unkonown";
+	return "UNKNOWN";
 }
 
 static const od_frontend_status_t od_frontend_status_errs[] = {
@@ -72,6 +78,7 @@ static const od_frontend_status_t od_frontend_status_errs[] = {
 	OD_ECLIENT_WRITE,
 	OD_ECLIENT_READ,
 	OD_ESYNC_BROKEN,
+	OD_ECATCHUP_TIMEOUT,
 };
 
 #define OD_FRONTEND_STATUS_ERRORS_TYPES_COUNT \

@@ -6,6 +6,7 @@ set(od_src
     daemon.c
     pid.c
     logger.c
+    pool.c
     rules.c
     config.c
     config_reader.c
@@ -40,7 +41,12 @@ set(od_src
     ejection.c
     thread_global.c
     compression.c
-    option.c)
+    option.c
+    tls_config.c
+    query.c
+    storage.c
+    murmurhash.c
+    hashmap.c)
 
 if (PAM_FOUND)
         list(APPEND od_src pam.c)

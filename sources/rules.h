@@ -7,18 +7,9 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-typedef struct od_rule_storage od_rule_storage_t;
 typedef struct od_rule_auth od_rule_auth_t;
 typedef struct od_rule od_rule_t;
 typedef struct od_rules od_rules_t;
-
-typedef enum {
-	OD_RULE_TLS_DISABLE,
-	OD_RULE_TLS_ALLOW,
-	OD_RULE_TLS_REQUIRE,
-	OD_RULE_TLS_VERIFY_CA,
-	OD_RULE_TLS_VERIFY_FULL
-} od_rule_tls_t;
 
 typedef enum {
 	OD_RULE_AUTH_UNDEF,
@@ -30,37 +21,17 @@ typedef enum {
 	OD_RULE_AUTH_CERT
 } od_rule_auth_type_t;
 
-typedef enum {
-	OD_RULE_POOL_SESSION,
-	OD_RULE_POOL_TRANSACTION,
-	OD_RULE_POOL_STATEMENT,
-} od_rule_pool_type_t;
-
-typedef enum {
-	OD_RULE_STORAGE_REMOTE,
-	OD_RULE_STORAGE_LOCAL,
-} od_rule_storage_type_t;
-
-struct od_rule_storage {
-	char *name;
-	char *type;
-	od_rule_storage_type_t storage_type;
-	char *host;
-	int port;
-	od_rule_tls_t tls_mode;
-	char *tls;
-	char *tls_ca_file;
-	char *tls_key_file;
-	char *tls_cert_file;
-	char *tls_protocols;
-	int server_max_routing;
-	od_list_t link;
-};
-
 struct od_rule_auth {
 	char *common_name;
 	od_list_t link;
 };
+
+typedef enum {
+	OD_RULE_ROLE_ADMIN,
+	OD_RULE_ROLE_STAT,
+	OD_RULE_ROLE_NOTALLOW,
+	OD_RULE_ROLE_UNDEF,
+} od_rule_role_type_t;
 
 typedef struct od_rule_key od_rule_key_t;
 
@@ -88,6 +59,7 @@ struct od_rule {
 	int mark;
 	int obsolete;
 	int refs;
+
 	/* id */
 	char *db_name;
 	int db_name_len;
@@ -95,6 +67,8 @@ struct od_rule {
 	char *user_name;
 	int user_name_len;
 	int user_is_default;
+	od_rule_role_type_t user_role;
+
 	/* auth */
 	char *auth;
 	od_rule_auth_type_t auth_mode;
@@ -107,7 +81,6 @@ struct od_rule {
 
 #ifdef PAM_FOUND
 	/*  PAM parametrs */
-
 	char *auth_pam_service;
 	od_pam_auth_data_t *auth_pam_data;
 #endif
@@ -128,21 +101,21 @@ struct od_rule {
 	od_rule_storage_t *storage;
 	char *storage_name;
 	char *storage_db;
+
 	char *storage_user;
 	int storage_user_len;
+
 	char *storage_password;
 	int storage_password_len;
+
 	/* pool */
-	od_rule_pool_type_t pool;
-	char *pool_sz;
-	int pool_size;
-	int pool_timeout;
-	int pool_ttl;
-	int pool_discard;
-	int pool_cancel;
-	int pool_rollback;
-	uint64_t pool_client_idle_timeout; // makes sence only for session pooling
-	uint64_t pool_idle_in_transaction_timeout; // makes sence only for session pooling
+	od_rule_pool_t *pool;
+	int catchup_timeout;
+	int catchup_checks;
+
+	/* PostgreSQL options */
+	kiwi_vars_t vars;
+
 	/* misc */
 	int client_fwd_error;
 	int reserve_session_server_connection;
@@ -159,6 +132,7 @@ struct od_rule {
 };
 
 struct od_rules {
+	pthread_mutex_t mu;
 	od_list_t storages;
 #ifdef LDAP_FOUND
 	od_list_t ldap_endpoints;
@@ -166,12 +140,16 @@ struct od_rules {
 	od_list_t rules;
 };
 
+/* rules */
+
 void od_rules_init(od_rules_t *);
 void od_rules_free(od_rules_t *);
 int od_rules_validate(od_rules_t *, od_config_t *, od_logger_t *);
 int od_rules_merge(od_rules_t *, od_rules_t *, od_list_t *added,
-		   od_list_t *deleted);
+		   od_list_t *deleted, od_list_t *drop);
 void od_rules_print(od_rules_t *, od_logger_t *);
+
+int od_rules_cleanup(od_rules_t *rules);
 
 /* rule */
 od_rule_t *od_rules_add(od_rules_t *);
@@ -184,17 +162,14 @@ od_rule_t *od_rules_forward(od_rules_t *, char *, char *);
 od_rule_t *od_rules_match(od_rules_t *, char *, char *, int, int);
 
 void od_rules_rule_free(od_rule_t *rule);
-od_rule_storage_t *od_rules_storage_allocate(void);
 
-/* storage */
+/* storage API */
+od_rule_storage_t *od_rules_storage_match(od_rules_t *, char *);
 od_rule_storage_t *od_rules_storage_add(od_rules_t *rules,
 					od_rule_storage_t *storage);
 
-od_rule_storage_t *od_rules_storage_match(od_rules_t *, char *);
-
-od_rule_storage_t *od_rules_storage_copy(od_rule_storage_t *);
-
-void od_rules_storage_free(od_rule_storage_t *);
+od_retcode_t od_rules_storages_watchdogs_run(od_logger_t *logger,
+					     od_rules_t *rules);
 
 #ifdef LDAP_FOUND
 /* ldap endpoint */

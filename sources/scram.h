@@ -1,7 +1,13 @@
 #ifndef ODYSSEY_SCRAM_H
 #define ODYSSEY_SCRAM_H
 
-#if PG_VERSION_NUM >= 120000
+/*
+ * Odyssey.
+ *
+ * Scalable PostgreSQL connection pooler.
+ */
+
+#if PG_VERSION_NUM >= 130000
 #define od_b64_encode(src, src_len, dst, dst_len) \
 	pg_b64_encode(src, src_len, dst, dst_len);
 #define od_b64_decode(src, src_len, dst, dst_len) \
@@ -13,11 +19,41 @@
 	pg_b64_decode(src, src_len, dst);
 #endif
 
-/*
- * Odyssey.
- *
- * Scalable PostgreSQL connection pooler.
- */
+#if PG_VERSION_NUM < 140000
+typedef scram_HMAC_ctx od_scram_ctx_t;
+
+#define od_scram_HMAC_init scram_HMAC_init
+#define od_scram_HMAC_create() malloc(sizeof(od_scram_ctx_t))
+#define od_scram_HMAC_update scram_HMAC_update
+#define od_scram_HMAC_final scram_HMAC_final
+#define od_scram_HMAC_free(ctx) free(ctx)
+
+#else
+
+struct pg_hmac_ctx {
+	pg_cryptohash_ctx *hash;
+	pg_cryptohash_type type;
+	int block_size;
+	int digest_size;
+
+	/*
+	 * Use the largest block size among supported options.  This wastes some
+	 * memory but simplifies the allocation logic.
+	 */
+	uint8 k_ipad[PG_SHA512_BLOCK_LENGTH];
+	uint8 k_opad[PG_SHA512_BLOCK_LENGTH];
+};
+
+typedef struct pg_hmac_ctx od_scram_ctx_t;
+
+#define od_scram_HMAC_init pg_hmac_init
+#define od_scram_HMAC_create() pg_hmac_create(PG_SHA256)
+#define od_scram_HMAC_update(ctx, str, slen) \
+	pg_hmac_update(ctx, (const uint8_t *)str, slen)
+#define od_scram_HMAC_final(dest, ctx) pg_hmac_final(ctx, dest, sizeof(dest))
+#define od_scram_HMAC_free pg_hmac_free
+
+#endif
 
 typedef struct od_scram_state od_scram_state_t;
 

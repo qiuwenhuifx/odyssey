@@ -20,6 +20,19 @@ typedef enum {
 	KIWI_VAR_APPLICATION_NAME,
 	KIWI_VAR_COMPRESSION,
 	KIWI_VAR_SEARCH_PATH,
+	KIWI_VAR_STATEMENT_TIMEOUT,
+	KIWI_VAR_LOCK_TIMEOUT,
+	KIWI_VAR_IDLE_IN_TRANSACTION_TIMEOUT,
+	KIWI_VAR_DEFAULT_TABLE_ACCESS_METHOD,
+	KIWI_VAR_DEFAULT_TOAST_COMPRESSION,
+	KIWI_VAR_CHECK_FUNCTION_BODIES,
+	KIWI_VAR_DEFAULT_TRANSACTION_ISOLATION,
+	KIWI_VAR_DEFAULT_TRANSACTION_READ_ONLY,
+	KIWI_VAR_DEFAULT_TRANSACTION_DEFERRABLE,
+	KIWI_VAR_TRANSACTION_ISOLATION,
+	KIWI_VAR_TRANSACTION_READ_ONLY,
+	KIWI_VAR_IDLE_SESSION_TIMEOUT,
+	KIWI_VAR_GP_SESSION_ROLE,
 	KIWI_VAR_MAX,
 	KIWI_VAR_UNDEF
 } kiwi_var_type_t;
@@ -96,6 +109,38 @@ static inline void kiwi_vars_init(kiwi_vars_t *vars)
 		      "application_name", 17);
 	kiwi_var_init(&vars->vars[KIWI_VAR_COMPRESSION], "compression", 12);
 	kiwi_var_init(&vars->vars[KIWI_VAR_SEARCH_PATH], "search_path", 12);
+	kiwi_var_init(&vars->vars[KIWI_VAR_STATEMENT_TIMEOUT],
+		      "statement_timeout", sizeof("statement_timeout"));
+	kiwi_var_init(&vars->vars[KIWI_VAR_LOCK_TIMEOUT], "lock_timeout",
+		      sizeof("lock_timeout"));
+	kiwi_var_init(&vars->vars[KIWI_VAR_IDLE_IN_TRANSACTION_TIMEOUT],
+		      "idle_in_transaction_timeout",
+		      sizeof("idle_in_transaction_timeout"));
+	kiwi_var_init(&vars->vars[KIWI_VAR_DEFAULT_TABLE_ACCESS_METHOD],
+		      "default_table_access_method",
+		      sizeof("default_table_access_method"));
+	kiwi_var_init(&vars->vars[KIWI_VAR_DEFAULT_TOAST_COMPRESSION],
+		      "default_toast_compression",
+		      sizeof("default_toast_compression"));
+	kiwi_var_init(&vars->vars[KIWI_VAR_CHECK_FUNCTION_BODIES],
+		      "check_function_bodies", sizeof("check_function_bodies"));
+	kiwi_var_init(&vars->vars[KIWI_VAR_DEFAULT_TRANSACTION_ISOLATION],
+		      "default_transaction_isolation",
+		      sizeof("default_transaction_isolation"));
+	kiwi_var_init(&vars->vars[KIWI_VAR_DEFAULT_TRANSACTION_READ_ONLY],
+		      "default_transaction_read_only",
+		      sizeof("default_transaction_read_only"));
+	kiwi_var_init(&vars->vars[KIWI_VAR_DEFAULT_TRANSACTION_DEFERRABLE],
+		      "default_transaction_deferrable",
+		      sizeof("default_transaction_deferrable"));
+	kiwi_var_init(&vars->vars[KIWI_VAR_TRANSACTION_ISOLATION],
+		      "transaction_isolation", sizeof("transaction_isolation"));
+	kiwi_var_init(&vars->vars[KIWI_VAR_TRANSACTION_READ_ONLY],
+		      "transaction_read_only", sizeof("transaction_read_only"));
+	kiwi_var_init(&vars->vars[KIWI_VAR_IDLE_SESSION_TIMEOUT],
+		      "idle_session_timeout", sizeof("idle_session_timeout"));
+	kiwi_var_init(&vars->vars[KIWI_VAR_GP_SESSION_ROLE], "gp_session_role",
+		      sizeof("gp_session_role"));
 }
 
 static inline int kiwi_vars_set(kiwi_vars_t *vars, kiwi_var_type_t type,
@@ -122,6 +167,19 @@ static inline kiwi_var_type_t kiwi_vars_find(kiwi_vars_t *vars, char *name,
 			return type;
 	}
 	return KIWI_VAR_UNDEF;
+}
+
+static inline int kiwi_vars_override(kiwi_vars_t *vars,
+				     kiwi_vars_t *override_vars)
+{
+	kiwi_var_type_t type = 0;
+	for (; type < KIWI_VAR_MAX; type++) {
+		kiwi_var_t *var = kiwi_vars_of(override_vars, type);
+		if (!var->value_len)
+			continue;
+		kiwi_vars_set(vars, type, var->value, var->value_len);
+	}
+	return 0;
 }
 
 static inline int kiwi_vars_update(kiwi_vars_t *vars, char *name, int name_len,

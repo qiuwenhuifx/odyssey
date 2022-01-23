@@ -42,31 +42,6 @@ inline int od_router_foreach(od_router_t *router, od_route_pool_cb_t callback,
 	return rc;
 }
 
-static inline int od_router_kill_clients_cb(od_route_t *route, void **argv)
-{
-	(void)argv;
-	if (!route->rule->obsolete)
-		return 0;
-	od_route_lock(route);
-	od_route_kill_client_pool(route);
-	od_route_unlock(route);
-	return 0;
-}
-
-static inline int od_router_grac_shutdown_cb(od_route_t *route, void **argv)
-{
-	(void)argv;
-
-	if (!route->rule->obsolete) {
-		return 0;
-	}
-
-	od_route_lock(route);
-	od_route_grac_shutdown_pool(route);
-	od_route_unlock(route);
-	return 1;
-}
-
 static inline int od_router_reload_cb(od_route_t *route, void **argv)
 {
 	(void)argv;
@@ -81,6 +56,27 @@ static inline int od_router_reload_cb(od_route_t *route, void **argv)
 	return 1;
 }
 
+static inline int od_drop_obsolete_rule_connections_cb(od_route_t *route,
+						       void **argv)
+{
+	od_list_t *i;
+	od_rule_t *rule = route->rule;
+	od_list_t *obsolete_rules = argv[0];
+	od_list_foreach(obsolete_rules, i)
+	{
+		od_rule_key_t *obsolete_rule;
+		obsolete_rule = od_container_of(i, od_rule_key_t, link);
+		assert(rule);
+		assert(obsolete_rule);
+		if (strcmp(rule->user_name, obsolete_rule->usr_name) == 0 &&
+		    strcmp(rule->db_name, obsolete_rule->db_name) == 0) {
+			od_route_kill_client_pool(route);
+			return 0;
+		}
+	}
+	return 0;
+}
+
 int od_router_reconfigure(od_router_t *router, od_rules_t *rules)
 {
 	od_instance_t *instance = router->global->instance;
@@ -89,14 +85,18 @@ int od_router_reconfigure(od_router_t *router, od_rules_t *rules)
 	int updates;
 	od_list_t added;
 	od_list_t deleted;
+	od_list_t to_drop;
 	od_list_init(&added);
 	od_list_init(&deleted);
+	od_list_init(&to_drop);
 
-	updates = od_rules_merge(&router->rules, rules, &added, &deleted);
+	updates = od_rules_merge(&router->rules, rules, &added, &deleted,
+				 &to_drop);
 
 	if (updates > 0) {
 		od_extention_t *extentions = router->global->extentions;
 		od_list_t *i;
+		od_list_t *j;
 		od_module_t *modules = extentions->modules;
 
 		od_list_foreach(&added, i)
@@ -116,6 +116,13 @@ int od_router_reconfigure(od_router_t *router, od_rules_t *rules)
 			       rk->db_name);
 		}
 
+		{
+			void *argv[] = { &to_drop };
+			od_route_pool_foreach(
+				&router->route_pool,
+				od_drop_obsolete_rule_connections_cb, argv);
+		}
+
 		/* reloadcallback */
 		od_list_foreach(&modules->link, i)
 		{
@@ -130,14 +137,21 @@ int od_router_reconfigure(od_router_t *router, od_rules_t *rules)
 			}
 		}
 
-		od_list_foreach(&added, i)
+		od_list_foreach_safe(&added, i, j)
 		{
 			od_rule_key_t *rk;
 			rk = od_container_of(i, od_rule_key_t, link);
 			od_rule_key_free(rk);
 		}
 
-		od_list_foreach(&deleted, i)
+		od_list_foreach_safe(&deleted, i, j)
+		{
+			od_rule_key_t *rk;
+			rk = od_container_of(i, od_rule_key_t, link);
+			od_rule_key_free(rk);
+		}
+
+		od_list_foreach_safe(&to_drop, i, j)
 		{
 			od_rule_key_t *rk;
 			rk = od_container_of(i, od_rule_key_t, link);
@@ -178,19 +192,21 @@ static inline int od_router_expire_server_tick_cb(od_server_t *server,
 	uint64_t lifetime = route->rule->server_lifetime_us;
 	uint64_t server_life = *now_us - server->init_time_us;
 
-	/* advance idle time for 1 sec */
-	if (server_life < lifetime &&
-	    server->idle_time < route->rule->pool_ttl) {
-		server->idle_time++;
-		return 0;
-	}
+	if (!server->offline) {
+		/* advance idle time for 1 sec */
+		if (server_life < lifetime &&
+		    server->idle_time < route->rule->pool->ttl) {
+			server->idle_time++;
+			return 0;
+		}
 
-	/*
-	 * Do not expire more servers than we are allowed to connect at one time
-	 * This avoids need to re-launch lot of connections together
-	 */
-	if (*count > route->rule->storage->server_max_routing)
-		return 0;
+		/*
+		 * Do not expire more servers than we are allowed to connect at one time
+		 * This avoids need to re-launch lot of connections together
+		 */
+		if (*count > route->rule->storage->server_max_routing)
+			return 0;
+	} // else remove server because we are forced to
 
 	/* remove server for server pool */
 	od_pg_server_pool_set(&route->server_pool, server, OD_SERVER_UNDEF);
@@ -216,7 +232,7 @@ static inline int od_router_expire_cb(od_route_t *route, void **argv)
 		return 0;
 	}
 
-	if (!route->rule->pool_ttl) {
+	if (!route->rule->pool->ttl) {
 		od_route_unlock(route);
 		return 0;
 	}
@@ -289,6 +305,7 @@ void od_router_stat(od_router_t *router, uint64_t prev_time_us,
 od_router_status_t od_router_route(od_router_t *router, od_client_t *client)
 {
 	kiwi_be_startup_t *startup = &client->startup;
+	od_instance_t *instance = router->global->instance;
 
 	/* match route */
 	assert(startup->database.value_len);
@@ -301,6 +318,14 @@ od_router_status_t od_router_route(od_router_t *router, od_client_t *client)
 	rule = od_rules_forward(&router->rules, startup->database.value,
 				startup->user.value);
 	if (rule == NULL) {
+		od_router_unlock(router);
+		return OD_ROUTER_ERROR_NOT_FOUND;
+	}
+	od_debug(&instance->logger, "routing", NULL, NULL,
+		 "matched rule: %s %s with %s routing type", rule->db_name,
+		 rule->user_name, rule->pool->routing_type);
+	if (!od_rule_matches_client(rule->pool, client->type)) {
+		// emulate not found error
 		od_router_unlock(router);
 		return OD_ROUTER_ERROR_NOT_FOUND;
 	}
@@ -335,6 +360,7 @@ od_router_status_t od_router_route(od_router_t *router, od_client_t *client)
 	route = od_route_pool_match(&router->route_pool, &id, rule);
 	if (route == NULL) {
 		route = od_route_pool_new(&router->route_pool, &id, rule);
+		//od_debug()
 		if (route == NULL) {
 			od_router_unlock(router);
 			return OD_ROUTER_ERROR;
@@ -449,7 +475,7 @@ od_router_status_t od_router_attach(od_router_t *router, od_client_t *client,
 			/* Maybe start new connection, if we still have capacity for it */
 			int connections_in_pool =
 				od_server_pool_total(&route->server_pool);
-			int pool_size = route->rule->pool_size;
+			int pool_size = route->rule->pool->size;
 			uint32_t currently_routing =
 				od_atomic_u32_of(&router->servers_routing);
 			uint32_t max_routing = (uint32_t)route->rule->storage
@@ -493,7 +519,7 @@ od_router_status_t od_router_attach(od_router_t *router, od_client_t *client,
 		 * The condition triggered when a server connection
 		 * put into idle state by DETACH events.
 		 */
-		uint32_t timeout = route->rule->pool_timeout;
+		uint32_t timeout = route->rule->pool->timeout;
 		if (timeout == 0)
 			timeout = UINT32_MAX;
 		rc = od_route_wait(route, timeout);
@@ -506,7 +532,8 @@ od_router_status_t od_router_attach(od_router_t *router, od_client_t *client,
 	od_route_unlock(route);
 
 	/* create new server object */
-	server = od_server_allocate();
+	server = od_server_allocate(
+		route->rule->pool->reserve_prepared_statement);
 	if (server == NULL)
 		return OD_ROUTER_ERROR;
 	od_id_generate(&server->id, "s");

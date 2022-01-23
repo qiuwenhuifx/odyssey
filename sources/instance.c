@@ -53,8 +53,9 @@ void od_usage(od_instance_t *instance, char *path)
 
 static inline void od_bind_version()
 {
-	od_asprintf(&argp_program_version, "odyssey (git: %s %s %s)",
-		    OD_VERSION_NUMBER, OD_VERSION_GIT, OD_VERSION_BUILD);
+	od_asprintf((const **__restrict) & argp_program_version,
+		    "odyssey (git: %s %s %s)", OD_VERSION_NUMBER,
+		    OD_VERSION_GIT, OD_VERSION_BUILD);
 }
 
 static inline od_retcode_t od_args_init(od_arguments_t *args,
@@ -108,7 +109,8 @@ int od_instance_main(od_instance_t *instance, int argc, char **argv)
 	od_error_init(&error);
 	int rc;
 	rc = od_config_reader_import(&instance->config, &router.rules, &error,
-				     &extentions, instance->config_file);
+				     &extentions, &global,
+				     instance->config_file);
 	if (rc == -1) {
 		od_error(&instance->logger, "config", NULL, NULL, "%s",
 			 error.error);

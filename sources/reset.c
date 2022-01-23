@@ -22,7 +22,7 @@ int od_reset(od_server_t *server)
 	}
 
 	/* support route rollback off */
-	if (!route->rule->pool_rollback) {
+	if (!route->rule->pool->rollback) {
 		if (server->is_transaction) {
 			od_log(&instance->logger, "reset", server->client,
 			       server, "in active transaction, closing");
@@ -52,7 +52,7 @@ int od_reset(od_server_t *server)
 	int wait_try = 0;
 	int wait_try_cancel = 0;
 	int wait_cancel_limit = 1;
-	int rc = 0;
+	od_retcode_t rc = 0;
 	for (;;) {
 		/* check that msg syncronization is not broken*/
 		if (server->relay.packet > 0)
@@ -74,7 +74,7 @@ int od_reset(od_server_t *server)
 				goto error;
 
 			/* support route cancel off */
-			if (!route->rule->pool_cancel) {
+			if (!route->rule->pool->cancel) {
 				od_log(&instance->logger, "reset",
 				       server->client, server,
 				       "not synchronized, closing");
@@ -106,12 +106,13 @@ int od_reset(od_server_t *server)
 
 	/* send rollback in case server has an active
 	 * transaction running */
-	if (route->rule->pool_rollback) {
+	if (route->rule->pool->rollback) {
 		if (server->is_transaction) {
 			char query_rlb[] = "ROLLBACK";
 			rc = od_backend_query(server, "reset-rollback",
-					      query_rlb, sizeof(query_rlb),
-					      wait_timeout);
+					      query_rlb, NULL,
+					      sizeof(query_rlb), wait_timeout,
+					      1);
 			if (rc == -1)
 				goto error;
 			assert(!server->is_transaction);
@@ -119,11 +120,23 @@ int od_reset(od_server_t *server)
 	}
 
 	/* send DISCARD ALL */
-	if (route->rule->pool_discard) {
+	if (route->rule->pool->discard) {
 		char query_discard[] = "DISCARD ALL";
 		rc = od_backend_query(server, "reset-discard", query_discard,
-				      sizeof(query_discard), wait_timeout);
-		if (rc == -1)
+				      NULL, sizeof(query_discard), wait_timeout,
+				      1);
+		if (rc == NOT_OK_RESPONSE)
+			goto error;
+	}
+
+	/* send smard DISCARD ALL */
+	if (route->rule->pool->smart_discard) {
+		char query_discard[] =
+			"SET SESSION AUTHORIZATION DEFAULT;RESET ALL;CLOSE ALL;UNLISTEN *;SELECT pg_advisory_unlock_all();DISCARD PLANS;DISCARD SEQUENCES;DISCARD TEMP;";
+		rc = od_backend_query(server, "reset-discard-smart",
+				      query_discard, NULL,
+				      sizeof(query_discard), wait_timeout, 1);
+		if (rc == NOT_OK_RESPONSE)
 			goto error;
 	}
 

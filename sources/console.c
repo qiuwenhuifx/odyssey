@@ -9,26 +9,30 @@
 #include <machinarium.h>
 #include <odyssey.h>
 
-enum { OD_LKILL_CLIENT,
-       OD_LRELOAD,
-       OD_LSHOW,
-       OD_LSTATS,
-       OD_LSERVERS,
-       OD_LCLIENTS,
-       OD_LLISTS,
-       OD_LSET,
-       OD_LCREATE,
-       OD_LDROP,
-       OD_LPOOLS,
-       OD_LPOOLS_EXTENDED,
-       OD_LDATABASES,
-       OD_LMODULE,
-       OD_LERRORS,
-       OD_LERRORS_PER_ROUTE,
-       OD_LFRONTEND,
-       OD_LROUTER,
-       OD_LVERSION,
-};
+typedef enum {
+	OD_LKILL_CLIENT,
+	OD_LRELOAD,
+	OD_LSHOW,
+	OD_LSTATS,
+	OD_LSERVERS,
+	OD_LSERVER_PREP_STMTS,
+	OD_LCLIENTS,
+	OD_LLISTS,
+	OD_LSET,
+	OD_LCREATE,
+	OD_LDROP,
+	OD_LPOOLS,
+	OD_LPOOLS_EXTENDED,
+	OD_LDATABASES,
+	OD_LMODULE,
+	OD_LERRORS,
+	OD_LERRORS_PER_ROUTE,
+	OD_LFRONTEND,
+	OD_LROUTER,
+	OD_LVERSION,
+	OD_LLISTEN,
+	OD_LSTORAGES,
+} od_console_keywords_t;
 
 static od_keyword_t od_console_keywords[] = {
 	od_keyword("kill_client", OD_LKILL_CLIENT),
@@ -36,6 +40,7 @@ static od_keyword_t od_console_keywords[] = {
 	od_keyword("show", OD_LSHOW),
 	od_keyword("stats", OD_LSTATS),
 	od_keyword("servers", OD_LSERVERS),
+	od_keyword("server_prep_stmts", OD_LSERVER_PREP_STMTS),
 	od_keyword("clients", OD_LCLIENTS),
 	od_keyword("lists", OD_LLISTS),
 	od_keyword("set", OD_LSET),
@@ -50,6 +55,8 @@ static od_keyword_t od_console_keywords[] = {
 	od_keyword("router", OD_LROUTER),
 	od_keyword("drop", OD_LDROP),
 	od_keyword("version", OD_LVERSION),
+	od_keyword("listen", OD_LLISTEN),
+	od_keyword("storages", OD_LSTORAGES),
 	{ 0, 0, 0 }
 };
 
@@ -143,6 +150,18 @@ static inline int od_console_show_stats_add(machine_msg_t *stream,
 		return NOT_OK_RESPONSE;
 	/* avg_wait_time */
 	data_len = od_snprintf(data, sizeof(data), "%" PRIu64, 0UL);
+	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
+	if (rc == NOT_OK_RESPONSE)
+		return NOT_OK_RESPONSE;
+	/* count of backend parse msgs */
+	data_len =
+		od_snprintf(data, sizeof(data), "%" PRIu64, total->count_parse);
+	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
+	if (rc == NOT_OK_RESPONSE)
+		return NOT_OK_RESPONSE;
+	/* count of backend parse msgs reuse */
+	data_len = od_snprintf(data, sizeof(data), "%" PRIu64,
+			       total->count_parse_reuse);
 	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 	if (rc == NOT_OK_RESPONSE)
 		return NOT_OK_RESPONSE;
@@ -263,12 +282,12 @@ static inline int od_console_show_stats(od_client_t *client,
 	od_cron_t *cron = client->global->cron;
 
 	if (kiwi_be_write_row_descriptionf(
-		    stream, "sllllllllllllll", "database", "total_xact_count",
+		    stream, "sllllllllllllllll", "database", "total_xact_count",
 		    "total_query_count", "total_received", "total_sent",
 		    "total_xact_time", "total_query_time", "total_wait_time",
 		    "avg_xact_count", "avg_query_count", "avg_recv", "avg_sent",
-		    "avg_xact_time", "avg_query_time",
-		    "avg_wait_time") == NULL) {
+		    "avg_xact_time", "avg_query_time", "avg_wait_time",
+		    "total_parse_count", "total_parse_count_reuse") == NULL) {
 		return NOT_OK_RESPONSE;
 	}
 
@@ -601,7 +620,7 @@ static inline int od_console_show_pools_add_cb(od_route_t *route, void **argv)
 	/* pool_mode */
 	rc = NOT_OK_RESPONSE;
 
-	switch (route->rule->pool) {
+	switch (route->rule->pool->pool) {
 	case OD_RULE_POOL_SESSION:
 		rc = kiwi_be_write_data_row_add(stream, offset, "session", 7);
 		break;
@@ -694,6 +713,7 @@ static inline int od_console_show_databases_add_cb(od_route_t *route,
 	od_rule_t *rule = route->rule;
 	od_rule_storage_t *storage = rule->storage;
 
+	/* host */
 	char *host = storage->host;
 	if (!host) {
 		host = "";
@@ -724,8 +744,8 @@ static inline int od_console_show_databases_add_cb(od_route_t *route,
 	if (rc == NOT_OK_RESPONSE)
 		goto error;
 
-	/* pool_size */
-	data_len = od_snprintf(data, sizeof(data), "%d", rule->pool_size);
+	/* pool size */
+	data_len = od_snprintf(data, sizeof(data), "%d", rule->pool->size);
 	rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 	if (rc == NOT_OK_RESPONSE)
 		goto error;
@@ -736,11 +756,11 @@ static inline int od_console_show_databases_add_cb(od_route_t *route,
 	if (rc == NOT_OK_RESPONSE)
 		goto error;
 
-	/* pool_mode */
-	rc = -1;
-	if (rule->pool == OD_RULE_POOL_SESSION)
+	/* pool mode */
+	rc = NOT_OK_RESPONSE;
+	if (rule->pool->pool == OD_RULE_POOL_SESSION)
 		rc = kiwi_be_write_data_row_add(stream, offset, "session", 7);
-	if (rule->pool == OD_RULE_POOL_TRANSACTION)
+	if (rule->pool->pool == OD_RULE_POOL_TRANSACTION)
 		rc = kiwi_be_write_data_row_add(stream, offset, "transaction",
 						11);
 
@@ -1019,10 +1039,109 @@ static inline int od_console_show_servers_server_cb(od_server_t *server,
 	if (rc == NOT_OK_RESPONSE)
 		return NOT_OK_RESPONSE;
 	/* tls */
-	data_len = od_snprintf(data, sizeof(data), "%s", "");
+	data_len = od_snprintf(data, sizeof(data), "%s",
+			       route->rule->storage->tls_opts->tls);
 	rc = kiwi_be_write_data_row_add(msg, offset, data, data_len);
 	if (rc == NOT_OK_RESPONSE)
 		return NOT_OK_RESPONSE;
+	/* offline */
+	data_len = od_snprintf(data, sizeof(data), "%d", server->offline);
+	rc = kiwi_be_write_data_row_add(msg, offset, data, data_len);
+	if (rc == NOT_OK_RESPONSE)
+		return NOT_OK_RESPONSE;
+	return 0;
+}
+
+static inline int od_console_show_server_prep_stmt_cb(od_server_t *server,
+						      void **argv)
+{
+	od_route_t *route = server->route;
+	od_hashmap_t *hm = server->prep_stmts;
+
+	for (size_t i = 0; i < hm->size; ++i) {
+		od_hashmap_bucket_t *bucket = hm->buckets[i];
+		pthread_mutex_lock(&bucket->mu);
+
+		od_list_t *i;
+		od_list_foreach(&(bucket->nodes->link), i)
+		{
+			int offset;
+			machine_msg_t *stream = argv[0];
+			machine_msg_t *msg;
+			msg = kiwi_be_write_data_row(stream, &offset);
+			if (msg == NULL) {
+				goto error;
+			}
+
+			/* type */
+			char data[64];
+			size_t data_len;
+			data_len = od_snprintf(data, sizeof(data), "S");
+
+			int rc;
+			rc = kiwi_be_write_data_row_add(stream, offset, data,
+							data_len);
+			if (rc == NOT_OK_RESPONSE) {
+				goto error;
+			}
+
+			/* user */
+			rc = kiwi_be_write_data_row_add(stream, offset,
+							route->id.user,
+							route->id.user_len - 1);
+			if (rc == NOT_OK_RESPONSE) {
+				goto error;
+			}
+
+			/* database */
+			rc = kiwi_be_write_data_row_add(
+				stream, offset, route->id.database,
+				route->id.database_len - 1);
+			if (rc == NOT_OK_RESPONSE) {
+				goto error;
+			}
+
+			/* sid */
+			data_len = od_snprintf(data, sizeof(data), "%s%.*s",
+					       server->id.id_prefix,
+					       (signed)sizeof(server->id.id),
+					       server->id.id);
+			rc = kiwi_be_write_data_row_add(msg, offset, data,
+							data_len);
+			if (rc == NOT_OK_RESPONSE) {
+				goto error;
+			}
+
+			od_hashmap_list_item_t *item;
+			item = od_container_of(i, od_hashmap_list_item_t, link);
+			od_hashmap_elt_t *prep_stmt = &item->key;
+			od_hashmap_elt_t *prep_stmt_desc = &item->value;
+
+			// description
+			rc = kiwi_be_write_data_row_add(stream, offset,
+							prep_stmt->data,
+							prep_stmt->len);
+			if (rc == NOT_OK_RESPONSE) {
+				goto error;
+			}
+
+			//refcount
+			data_len = od_snprintf(data, sizeof(data), "%d",
+					       prep_stmt_desc->data);
+			rc = kiwi_be_write_data_row_add(stream, offset, data,
+							data_len);
+			if (rc == NOT_OK_RESPONSE) {
+				goto error;
+			}
+		}
+
+		pthread_mutex_unlock(&bucket->mu);
+		continue;
+	error:
+		pthread_mutex_unlock(&bucket->mu);
+		return NOT_OK_RESPONSE;
+	}
+
 	return 0;
 }
 
@@ -1040,6 +1159,21 @@ static inline int od_console_show_servers_cb(od_route_t *route, void **argv)
 	return 0;
 }
 
+static inline int od_console_show_server_prep_stmts_cb(od_route_t *route,
+						       void **argv)
+{
+	od_route_lock(route);
+
+	od_server_pool_foreach(&route->server_pool, OD_SERVER_ACTIVE,
+			       od_console_show_server_prep_stmt_cb, argv);
+
+	od_server_pool_foreach(&route->server_pool, OD_SERVER_IDLE,
+			       od_console_show_server_prep_stmt_cb, argv);
+
+	od_route_unlock(route);
+	return 0;
+}
+
 static inline int od_console_show_servers(od_client_t *client,
 					  machine_msg_t *stream)
 {
@@ -1048,15 +1182,34 @@ static inline int od_console_show_servers(od_client_t *client,
 
 	machine_msg_t *msg;
 	msg = kiwi_be_write_row_descriptionf(
-		stream, "sssssdsdssddssds", "type", "user", "database", "state",
-		"addr", "port", "local_addr", "local_port", "connect_time",
-		"request_time", "wait", "wait_us", "ptr", "link", "remote_pid",
-		"tls");
+		stream, "sssssdsdssddssdss", "type", "user", "database",
+		"state", "addr", "port", "local_addr", "local_port",
+		"connect_time", "request_time", "wait", "wait_us", "ptr",
+		"link", "remote_pid", "tls", "offline");
 	if (msg == NULL)
 		return NOT_OK_RESPONSE;
 
 	void *argv[] = { stream };
 	od_router_foreach(router, od_console_show_servers_cb, argv);
+
+	return kiwi_be_write_complete(stream, "SHOW", 5);
+}
+
+static inline int od_console_show_server_prep_stmts(od_client_t *client,
+						    machine_msg_t *stream)
+{
+	assert(stream);
+	od_router_t *router = client->global->router;
+
+	machine_msg_t *msg;
+	msg = kiwi_be_write_row_descriptionf(stream, "ssssss", "type", "user",
+					     "database", "sid", "definition",
+					     "refcount");
+	if (msg == NULL)
+		return NOT_OK_RESPONSE;
+
+	void *argv[] = { stream };
+	od_router_foreach(router, od_console_show_server_prep_stmts_cb, argv);
 
 	return kiwi_be_write_complete(stream, "SHOW", 5);
 }
@@ -1168,7 +1321,8 @@ static inline int od_console_show_clients_callback(od_client_t *client,
 	return 0;
 }
 
-static inline int od_console_show_clients_cb(od_route_t *route, void **argv)
+static inline od_retcode_t od_console_show_clients_cb(od_route_t *route,
+						      void **argv)
 {
 	od_route_lock(route);
 
@@ -1324,6 +1478,210 @@ static inline int od_console_show_lists(od_client_t *client,
 	return kiwi_be_write_complete(stream, "SHOW", 5);
 }
 
+static inline int od_console_write_nullable_str(machine_msg_t *stream,
+						int offset, char *str)
+{
+	char data[64];
+	int data_len;
+
+	if (str == NULL) {
+		data_len = od_snprintf(data, sizeof(data), "(None)");
+		return kiwi_be_write_data_row_add(stream, offset, data,
+						  data_len);
+	}
+
+	return kiwi_be_write_data_row_add(stream, offset, str, strlen(str));
+}
+
+static inline int od_console_show_tls_options(od_tls_opts_t *tls_opts,
+					      int offset, machine_msg_t *stream)
+{
+	char *tls = od_config_tls_to_str(tls_opts->tls_mode);
+
+	od_retcode_t rc;
+
+	/* tls */
+	rc = od_console_write_nullable_str(stream, offset, tls);
+	if (rc != OK_RESPONSE) {
+		return rc;
+	}
+
+	/* tls_cert_file */
+	rc = od_console_write_nullable_str(stream, offset,
+					   tls_opts->tls_cert_file);
+	if (rc != OK_RESPONSE) {
+		return rc;
+	}
+
+	/* tls_key_file */
+	rc = od_console_write_nullable_str(stream, offset,
+					   tls_opts->tls_key_file);
+	if (rc != OK_RESPONSE) {
+		return rc;
+	}
+
+	/* tls_ca_file */
+	rc = od_console_write_nullable_str(stream, offset,
+					   tls_opts->tls_ca_file);
+	if (rc != OK_RESPONSE) {
+		return rc;
+	}
+
+	/* tls_protocols */
+	rc = od_console_write_nullable_str(stream, offset,
+					   tls_opts->tls_protocols);
+	if (rc != OK_RESPONSE) {
+		return rc;
+	}
+
+	return OK_RESPONSE;
+}
+
+static inline int od_console_show_listen(od_client_t *client,
+					 machine_msg_t *stream)
+{
+	assert(stream);
+	od_router_t *router = client->global->router;
+
+	machine_msg_t *msg;
+	msg = kiwi_be_write_row_descriptionf(stream, "sdsssss", "host", "port",
+					     "tls", "tls_cert_file",
+					     "tls_key_file", "tls_ca_file",
+					     "tls_protocols");
+
+	if (msg == NULL) {
+		return NOT_OK_RESPONSE;
+	}
+
+	od_instance_t *instance = router->global->instance;
+	od_config_t *config = &instance->config;
+
+	char data[64];
+	int data_len;
+	int rc;
+	int offset;
+
+	od_list_t *i;
+	od_list_foreach(&config->listen, i)
+	{
+		od_config_listen_t *listen_config;
+		listen_config = od_container_of(i, od_config_listen_t, link);
+
+		msg = kiwi_be_write_data_row(stream, &offset);
+		if (msg == NULL) {
+			return NOT_OK_RESPONSE;
+		}
+		/* host */
+
+		rc = od_console_write_nullable_str(stream, offset,
+						   listen_config->host);
+		if (rc != OK_RESPONSE) {
+			return rc;
+		}
+
+		/* port */
+		data_len = od_snprintf(data, sizeof(data), "%d",
+				       listen_config->port);
+		rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
+
+		if (rc != OK_RESPONSE) {
+			return rc;
+		}
+
+		rc = od_console_show_tls_options(listen_config->tls_opts,
+						 offset, stream);
+		if (rc != OK_RESPONSE) {
+			return rc;
+		}
+	}
+
+	return kiwi_be_write_complete(stream, "SHOW", 5);
+}
+
+static inline int od_console_show_storages(od_client_t *client,
+					   machine_msg_t *stream)
+{
+	assert(stream);
+	od_router_t *router = client->global->router;
+
+	machine_msg_t *msg;
+	msg = kiwi_be_write_row_descriptionf(stream, "ssdsssss", "type", "host",
+					     "port", "tls", "tls_cert_file",
+					     "tls_key_file", "tls_ca_file",
+					     "tls_protocols");
+
+	if (msg == NULL) {
+		return NOT_OK_RESPONSE;
+	}
+
+	od_rules_t *rules = &router->rules;
+
+	int rc;
+	int offset;
+
+	pthread_mutex_lock(&rules->mu);
+
+	od_list_t *i;
+	od_list_foreach(&rules->storages, i)
+	{
+		od_rule_storage_t *storage;
+		storage = od_container_of(i, od_rule_storage_t, link);
+
+		msg = kiwi_be_write_data_row(stream, &offset);
+		if (msg == NULL) {
+			rc = NOT_OK_RESPONSE;
+			goto error;
+		}
+
+		if (storage->storage_type == OD_RULE_STORAGE_REMOTE) {
+			rc = kiwi_be_write_data_row_add(stream, offset,
+							"remote", 6 + 1);
+			if (rc == NOT_OK_RESPONSE) {
+				goto error;
+			}
+		} else {
+			rc = kiwi_be_write_data_row_add(stream, offset, "local",
+							5 + 1);
+			if (rc == NOT_OK_RESPONSE) {
+				goto error;
+			}
+		}
+
+		char *host = storage->host;
+		if (!host) {
+			host = "";
+		}
+
+		rc = kiwi_be_write_data_row_add(stream, offset, host,
+						strlen(host));
+		if (rc == NOT_OK_RESPONSE) {
+			goto error;
+		}
+
+		char data[64];
+		int data_len;
+
+		/* port */
+		data_len = od_snprintf(data, sizeof(data), "%d", storage->port);
+		rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
+		if (rc == NOT_OK_RESPONSE) {
+			goto error;
+		}
+
+		rc = od_console_show_tls_options(storage->tls_opts, offset,
+						 stream);
+		if (rc != OK_RESPONSE) {
+			goto error;
+		}
+	}
+
+	pthread_mutex_unlock(&rules->mu);
+	return kiwi_be_write_complete(stream, "SHOW", 5);
+error:
+	pthread_mutex_unlock(&rules->mu);
+	return rc;
+}
+
 static inline int od_console_show(od_client_t *client, machine_msg_t *stream,
 				  od_parser_t *parser)
 {
@@ -1351,6 +1709,8 @@ static inline int od_console_show(od_client_t *client, machine_msg_t *stream,
 		return od_console_show_pools(client, stream, true);
 	case OD_LDATABASES:
 		return od_console_show_databases(client, stream);
+	case OD_LSERVER_PREP_STMTS:
+		return od_console_show_server_prep_stmts(client, stream);
 	case OD_LSERVERS:
 		return od_console_show_servers(client, stream);
 	case OD_LCLIENTS:
@@ -1363,6 +1723,10 @@ static inline int od_console_show(od_client_t *client, machine_msg_t *stream,
 		return od_console_show_errors_per_route(client, stream);
 	case OD_LVERSION:
 		return od_console_show_version(stream);
+	case OD_LLISTEN:
+		return od_console_show_listen(client, stream);
+	case OD_LSTORAGES:
+		return od_console_show_storages(client, stream);
 	}
 	return NOT_OK_RESPONSE;
 }
@@ -1504,8 +1868,53 @@ static inline int od_console_create(od_client_t *client, machine_msg_t *stream,
 	return NOT_OK_RESPONSE;
 }
 
-static inline int od_console_drop(od_client_t *client, machine_msg_t *stream,
-				  od_parser_t *parser)
+static inline int od_console_drop_server_cb(od_server_t *server, void **argv)
+{
+	server->offline = 1;
+	return OK_RESPONSE;
+}
+
+static inline od_retcode_t od_console_drop_server(od_route_t *route,
+						  void **argv)
+{
+	od_route_lock(route);
+
+	od_server_pool_foreach(&route->server_pool, OD_SERVER_ACTIVE,
+			       od_console_drop_server_cb, argv);
+
+	od_server_pool_foreach(&route->server_pool, OD_SERVER_IDLE,
+			       od_console_drop_server_cb, argv);
+
+	od_route_unlock(route);
+	return OK_RESPONSE;
+}
+
+static inline od_retcode_t od_console_drop_servers(od_client_t *client,
+						   machine_msg_t *stream,
+						   od_parser_t *parser)
+{
+	(void)client;
+	assert(stream);
+
+	od_token_t token;
+	int rc;
+	rc = od_parser_next(parser, &token);
+	switch (rc) {
+	case OD_PARSER_EOF:
+		break;
+	default:
+		return NOT_OK_RESPONSE;
+	}
+
+	od_router_t *router = client->global->router;
+
+	void *argv[] = { stream };
+	od_router_foreach(router, od_console_drop_server, argv);
+	return OK_RESPONSE;
+}
+
+static inline od_retcode_t
+od_console_drop(od_client_t *client, machine_msg_t *stream, od_parser_t *parser)
 {
 	assert(stream);
 	od_token_t token;
@@ -1524,8 +1933,12 @@ static inline int od_console_drop(od_client_t *client, machine_msg_t *stream,
 		return NOT_OK_RESPONSE;
 
 	switch (keyword->id) {
+	case OD_LSERVERS:
+		return od_console_drop_servers(client, stream, parser);
 	case OD_LMODULE:
 		return od_console_unload_module(client, stream, parser);
+	default:
+		return NOT_OK_RESPONSE;
 	}
 
 	return NOT_OK_RESPONSE;
@@ -1539,6 +1952,10 @@ int od_console_query(od_client_t *client, machine_msg_t *stream,
 	uint32_t query_len;
 	char *query;
 	machine_msg_t *msg;
+	if (client->rule->user_role != OD_RULE_ROLE_ADMIN &&
+	    client->rule->user_role != OD_RULE_ROLE_STAT) {
+		goto incorrect_role;
+	}
 	int rc;
 	rc = kiwi_be_read_query(query_data, query_data_size, &query,
 				&query_len);
@@ -1580,27 +1997,37 @@ int od_console_query(od_client_t *client, machine_msg_t *stream,
 			goto bad_query;
 		break;
 	case OD_LKILL_CLIENT:
+		if (client->rule->user_role != OD_RULE_ROLE_ADMIN)
+			goto incorrect_role;
 		rc = od_console_kill_client(client, stream, &parser);
 		if (rc == NOT_OK_RESPONSE)
 			goto bad_query;
 		break;
 	case OD_LRELOAD:
+		if (client->rule->user_role != OD_RULE_ROLE_ADMIN)
+			goto incorrect_role;
 		rc = od_console_reload(client, stream);
 		if (rc == NOT_OK_RESPONSE)
 			goto bad_query;
 		break;
 	case OD_LSET:
+		if (client->rule->user_role != OD_RULE_ROLE_ADMIN)
+			goto incorrect_role;
 		rc = od_console_set(client, stream);
 		if (rc == NOT_OK_RESPONSE)
 			goto bad_query;
 		break;
 	case OD_LCREATE:
+		if (client->rule->user_role != OD_RULE_ROLE_ADMIN)
+			goto incorrect_role;
 		rc = od_console_create(client, stream, &parser);
 		if (rc == NOT_OK_RESPONSE) {
 			goto bad_query;
 		}
 		break;
 	case OD_LDROP:
+		if (client->rule->user_role != OD_RULE_ROLE_ADMIN)
+			goto incorrect_role;
 		rc = od_console_drop(client, stream, &parser);
 		if (rc == NOT_OK_RESPONSE) {
 			goto bad_query;
@@ -1609,6 +2036,15 @@ int od_console_query(od_client_t *client, machine_msg_t *stream,
 	default:
 		goto bad_query;
 	}
+
+	return 0;
+
+incorrect_role:
+	od_error(&instance->logger, "console", client, NULL, "Unsiutable role");
+	msg = od_frontend_errorf(client, stream, KIWI_INSUFFICIENT_PRIVILEGE,
+				 "Unsiutable role");
+	if (msg == NULL)
+		return NOT_OK_RESPONSE;
 
 	return 0;
 

@@ -125,6 +125,8 @@ static inline int od_auth_frontend_cleartext(od_client_t *client)
 	if (client->rule->auth_query) {
 		char peer[128];
 		od_getpeername(client->io.io, peer, sizeof(peer), 1, 0);
+		od_debug(&instance->logger, "auth", client, NULL,
+			 "running auth_query for peer %s", peer);
 		rc = od_auth_query(client, peer);
 		if (rc == -1) {
 			od_error(&instance->logger, "auth", client, NULL,
@@ -138,6 +140,7 @@ static inline int od_auth_frontend_cleartext(od_client_t *client)
 			return NOT_OK_RESPONSE;
 		}
 
+		// TODO: consider support for empty password case.
 		if (client->password.password == NULL) {
 			od_log(&instance->logger, "auth", client, NULL,
 			       "user '%s.%s' incorrect user from %s",
@@ -249,6 +252,7 @@ static inline int od_auth_frontend_md5(od_client_t *client)
 			return -1;
 		}
 
+		// TODO: consider support for empty password case.
 		if (client->password.password == NULL) {
 			od_log(&instance->logger, "auth", client, NULL,
 			       "user '%s.%s' incorrect user from %s",
@@ -410,6 +414,7 @@ static inline int od_auth_frontend_scram_sha_256(od_client_t *client)
 			return -1;
 		}
 
+		// TODO: consider support for empty password case.
 		if (client->password.password == NULL) {
 			od_log(&instance->logger, "auth", client, NULL,
 			       "user '%s.%s' incorrect user from %s",

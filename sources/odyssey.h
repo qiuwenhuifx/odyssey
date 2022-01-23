@@ -7,10 +7,11 @@
  * Scalable PostgreSQL connection pooler.
  */
 
+#include "sources/c.h"
+#include "sources/postgres.h"
+
 #include <kiwi.h>
 #include <machinarium.h>
-
-#include "sources/c.h"
 
 #include "sources/common_const.h"
 #include "sources/misc.h"
@@ -28,19 +29,30 @@
 
 #include "sources/error.h"
 #include "sources/list.h"
+
+/* hash */
+#include "sources/murmurhash.h"
+#include "sources/hashmap.h"
+
 #include "sources/pid.h"
 #include "sources/id.h"
 #include "sources/logger.h"
 #include "sources/parser.h"
 
 #include "sources/global.h"
+#include "sources/tls_config.h"
 #include "sources/config.h"
 
 #ifdef LDAP_FOUND
 #include "sources/ldap_endpoint.h"
 #endif
 
+#ifdef PAM_FOUND
 #include "sources/pam.h"
+#endif
+
+#include "sources/storage.h"
+#include "sources/pool.h"
 #include "sources/rules.h"
 
 #include "sources/config_common.h"
@@ -49,11 +61,12 @@
 #include "sources/readahead.h"
 #include "sources/io.h"
 #include "sources/dns.h"
-#include "sources/postgres.h"
-
 #include "sources/attribute.h"
 
 #ifdef USE_SCRAM
+#include <openssl/rand.h>
+#include <openssl/sha.h>
+#include <openssl/hmac.h>
 #include "sources/scram.h"
 #endif
 
@@ -85,6 +98,7 @@
 #include "sources/config_reader.h"
 
 #include "sources/auth.h"
+#include "sources/query.h"
 #include "sources/auth_query.h"
 
 #include "sources/od_dlsym.h"

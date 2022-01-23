@@ -25,6 +25,7 @@ struct od_client_ctl {
 
 struct od_client {
 	od_client_state_t state;
+	od_pool_client_type_t type;
 	od_id_t id;
 	od_client_ctl_t ctl;
 	uint64_t coroutine_id;
@@ -35,16 +36,25 @@ struct od_client {
 	machine_io_t *notify_io;
 	od_rule_t *rule;
 	od_config_listen_t *config_listen;
+
 	uint64_t time_accept;
 	uint64_t time_setup;
 	uint64_t time_last_active;
+
 	kiwi_be_startup_t startup;
 	kiwi_vars_t vars;
 	kiwi_key_t key;
+
 	od_server_t *server;
+	/* od_route_t */
 	void *route;
+
+	// desc preparet statements ids
+	od_hashmap_t *prep_stmt_ids;
+
 	/* passwd from config rule */
 	kiwi_password_t password;
+
 	/* user - proveded passwd, fallback to use this when no other option is available*/
 	kiwi_password_t received_password;
 	od_global_t *global;
@@ -52,9 +62,21 @@ struct od_client {
 	od_list_t link;
 };
 
+static const size_t OD_CLIENT_DEFAULT_HASHMAP_SZ = 420;
+
+static inline od_retcode_t od_client_init_hm(od_client_t *client)
+{
+	client->prep_stmt_ids = od_hashmap_create(OD_CLIENT_DEFAULT_HASHMAP_SZ);
+	if (client->prep_stmt_ids == NULL) {
+		return NOT_OK_RESPONSE;
+	}
+	return OK_RESPONSE;
+}
+
 static inline void od_client_init(od_client_t *client)
 {
 	client->state = OD_CLIENT_UNDEF;
+	client->type = OD_POOL_CLIENT_EXTERNAL;
 	client->coroutine_id = 0;
 	client->tls = NULL;
 	client->cond = NULL;
@@ -76,6 +98,7 @@ static inline void od_client_init(od_client_t *client)
 	kiwi_password_init(&client->received_password);
 	od_list_init(&client->link_pool);
 	od_list_init(&client->link);
+	client->prep_stmt_ids = NULL;
 }
 
 static inline od_client_t *od_client_allocate(void)
@@ -95,6 +118,9 @@ static inline void od_client_free(od_client_t *client)
 		machine_cond_free(client->cond);
 	kiwi_password_free(&client->password);
 	kiwi_password_free(&client->received_password);
+	if (client->prep_stmt_ids) {
+		od_hashmap_free(client->prep_stmt_ids);
+	}
 	free(client);
 }
 

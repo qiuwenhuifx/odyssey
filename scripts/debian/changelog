@@ -1,5 +1,5 @@
-@NAME@ (@BUILD_NUMBER@-@VERSION@) stable; urgency=low
+@NAME@ (@VERSION@-@BUILD_NUMBER@) stable; urgency=low
 
   * Odyssey: scalable PostgreSQL connection pooler
 
- -- @WHOAMI@ <@WHOAMI@@@HOSTNAME@> @DATE@
+ -- MDB <mdb@yandex-team.ru> @DATE@
