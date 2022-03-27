@@ -150,11 +150,17 @@ Periodically display information about active routes.
 
 `log_stats yes`
 
-#### log\_stats_prom *yes|no*
+#### promhttp_server_port *integer*
 
-Write information about active routes in Prometheus format in addition to ordinary format. Requires [C Prometheus client library](https://github.com/digitalocean/prometheus-client-c) installed.
+Port on which metrics server listen. *http://localhost:port/* -- check is port running. *http://localhost:port/metrics* -- get metrics as a response.
 
-`log_stats_prom no`
+#### log\_general\_stats_prom *yes|no*
+
+Write information about active routes in Prometheus format in addition to ordinary format. Requires [C Prometheus client library](https://github.com/digitalocean/prometheus-client-c) installed. Log only info not specific to route
+
+### log\_route\_stats_prom *yes|no*
+
+Write information about active routes in Prometheus format in addition to ordinary format. Requires [C Prometheus client library](https://github.com/digitalocean/prometheus-client-c) installed. Log all available info
 
 #### stats\_interval *integer*
 
@@ -546,7 +552,7 @@ Close an server connection when it becomes idle for 'pool\_ttl' seconds.
 
 Set to zero to disable.
 
-`pool\_ttl 60`
+`pool_ttl 60`
 
 #### pool\_discard *yes|no*
 
