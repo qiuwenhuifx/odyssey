@@ -84,6 +84,7 @@ Supported flags:
 %M = message tskv
 %r = client port
 %h = client host
+%H = server host
 ```
 
 `log_format "%p %t %e %l [%i %s] (%c) %m\n"`
@@ -256,6 +257,21 @@ Comment 'client_max' to disable the limit. On client limit reach, Odyssey will
 reply with 'too many connections'.
 
 `client_max 100`
+
+#### hba\_file *string*
+
+Path to file containing host based authentication rules.
+Omit this option to disable HBA.
+
+`hba_file "path"`
+
+HBA file format follows the format of the PostgreSQL `pg_hba.conf` file.
+* Supported record types: `local`, `host`, `hostssl`, `hostnossl`.
+* Database field: `all`, `sameuser`, multiple names.
+* User field: `all`, multiple names.
+* Address field: IPv4 or IPv6 range.
+* Auth-method field: `deny` or `reject` (equivalent keywords), which leads to immediate disconnection,
+`allow` or `trust` (also equivalent keywords), which means applying auth method specified in matching route.
 
 ### Listen
 

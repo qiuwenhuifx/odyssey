@@ -126,7 +126,7 @@ typedef enum {
 	OD_LLDAP_BIND_PASSWD,
 	OD_LLDAP_SCHEME,
 	OD_LLDAP_SCOPE,
-	OD_LLDAP_FILTER,
+	OD_LLDAP_SEARCH_FILTER,
 	OD_LLDAP_ENDPOINT_NAME,
 	OD_LWATCHDOG,
 	OD_LWATCHDOG_LAG_QUERY,
@@ -134,6 +134,7 @@ typedef enum {
 	OD_LCATCHUP_TIMEOUT,
 	OD_LCATCHUP_CHECKS,
 	OD_LOPTIONS,
+	OD_LHBA_FILE,
 } od_lexeme_t;
 
 static od_keyword_t od_config_keywords[] = {
@@ -261,6 +262,7 @@ static od_keyword_t od_config_keywords[] = {
 	od_keyword("auth_module", OD_LAUTH_MODULE),
 	od_keyword("password_passthrough", OD_LAUTH_PASSWORD_PASSTHROUGH),
 	od_keyword("load_module", OD_LMODULE),
+	od_keyword("hba_file", OD_LHBA_FILE),
 
 	/* ldap */
 	od_keyword("ldap_endpoint", OD_LLDAP_ENDPOINT),
@@ -274,7 +276,7 @@ static od_keyword_t od_config_keywords[] = {
 	od_keyword("ldapurl", OD_LLDAP_URL),
 	od_keyword("ldapsearchattribute", OD_LLDAP_SEARCH_ATTRIBUTE),
 	od_keyword("ldapscheme", OD_LLDAP_SCHEME),
-	od_keyword("ldapfilter", OD_LLDAP_FILTER),
+	od_keyword("ldapsearchfilter", OD_LLDAP_SEARCH_FILTER),
 	od_keyword("ldapscope", OD_LLDAP_SCOPE),
 	od_keyword("ldap_endpoint_name", OD_LLDAP_ENDPOINT_NAME),
 
@@ -1465,6 +1467,12 @@ od_config_reader_ldap_endpoint(od_config_reader_t *reader)
 				goto error;
 
 		} break;
+		case OD_LLDAP_SEARCH_FILTER: {
+			if (!od_config_reader_string(
+				    reader, &ldap_current->ldapsearchfilter))
+				goto error;
+
+		} break;
 		}
 	}
 
@@ -1624,6 +1632,23 @@ error:
 	return NOT_OK_RESPONSE;
 }
 
+static int od_config_reader_hba_import(od_config_reader_t *config_reader)
+{
+	od_config_reader_t reader;
+	memset(&reader, 0, sizeof(reader));
+	reader.config = config_reader->config;
+	reader.error = config_reader->error;
+	reader.hba_rules = config_reader->hba_rules;
+	int rc;
+	rc = od_config_reader_open(&reader, config_reader->config->hba_file);
+	if (rc == -1)
+		return -1;
+	rc = od_hba_reader_parse(&reader);
+	od_config_reader_close(&reader);
+
+	return rc;
+}
+
 static int od_config_reader_parse(od_config_reader_t *reader,
 				  od_extention_t *extentions)
 {
@@ -1659,7 +1684,8 @@ static int od_config_reader_parse(od_config_reader_t *reader,
 				return NOT_OK_RESPONSE;
 			rc = od_config_reader_import(
 				reader->config, reader->rules, reader->error,
-				extentions, reader->global, config_file);
+				extentions, reader->global, reader->hba_rules,
+				config_file);
 			free(config_file);
 			if (rc == -1) {
 				goto error;
@@ -2029,6 +2055,15 @@ static int od_config_reader_parse(od_config_reader_t *reader,
 			}
 			continue;
 		}
+		case OD_LHBA_FILE: {
+			rc = od_config_reader_string(reader, &config->hba_file);
+			if (rc == -1)
+				goto error;
+			rc = od_config_reader_hba_import(reader);
+			if (rc == -1)
+				goto error;
+			continue;
+		}
 		default:
 			od_config_reader_error(reader, &token,
 					       "unexpected parameter");
@@ -2049,13 +2084,15 @@ success:
 
 int od_config_reader_import(od_config_t *config, od_rules_t *rules,
 			    od_error_t *error, od_extention_t *extentions,
-			    od_global_t *global, char *config_file)
+			    od_global_t *global, od_hba_rules_t *hba_rules,
+			    char *config_file)
 {
 	od_config_reader_t reader;
 	memset(&reader, 0, sizeof(reader));
 	reader.error = error;
 	reader.config = config;
 	reader.rules = rules;
+	reader.hba_rules = hba_rules;
 	reader.global = global;
 	int rc;
 	rc = od_config_reader_open(&reader, config_file);
