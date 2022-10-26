@@ -44,6 +44,7 @@ typedef enum {
 	OD_LLISTEN,
 	OD_LHOST,
 	OD_LPORT,
+	OD_LTARGET_SESSION_ATTRS,
 	OD_LBACKLOG,
 	OD_LNODELAY,
 	OD_LKEEPALIVE,
@@ -89,6 +90,7 @@ typedef enum {
 #ifdef LDAP_FOUND
 	OD_LLDAPPOOL_SIZE,
 	OD_LLDAPPOOL_TIMEOUT,
+	OD_LLDAPPOOL_TTL,
 #endif
 	OD_LPOOL_SIZE,
 	OD_LPOOL_TIMEOUT,
@@ -128,6 +130,10 @@ typedef enum {
 	OD_LLDAP_SCOPE,
 	OD_LLDAP_SEARCH_FILTER,
 	OD_LLDAP_ENDPOINT_NAME,
+	OD_LLDAP_STORAGE_CREDENTIALS_ATTR,
+	OD_LLDAP_STORAGE_CREDENTIALS,
+	OD_LLDAP_STORAGE_USERNAME,
+	OD_LLDAP_STORAGE_PASSWORD,
 	OD_LWATCHDOG,
 	OD_LWATCHDOG_LAG_QUERY,
 	OD_LWATCHDOG_LAG_INTERVAL,
@@ -176,6 +182,8 @@ static od_keyword_t od_config_keywords[] = {
 	od_keyword("listen", OD_LLISTEN),
 	od_keyword("host", OD_LHOST),
 	od_keyword("port", OD_LPORT),
+	/* target_session_attrs */
+	od_keyword("target_session_attrs", OD_LTARGET_SESSION_ATTRS),
 	od_keyword("backlog", OD_LBACKLOG),
 	od_keyword("nodelay", OD_LNODELAY),
 
@@ -235,6 +243,7 @@ static od_keyword_t od_config_keywords[] = {
 #ifdef LDAP_FOUND
 	od_keyword("ldap_pool_size", OD_LLDAPPOOL_SIZE),
 	od_keyword("ldap_pool_timeout", OD_LLDAPPOOL_TIMEOUT),
+	od_keyword("ldap_pool_ttl", OD_LLDAPPOOL_TTL),
 #endif
 	od_keyword("pool_size", OD_LPOOL_SIZE),
 	od_keyword("pool_timeout", OD_LPOOL_TIMEOUT),
@@ -279,6 +288,11 @@ static od_keyword_t od_config_keywords[] = {
 	od_keyword("ldapsearchfilter", OD_LLDAP_SEARCH_FILTER),
 	od_keyword("ldapscope", OD_LLDAP_SCOPE),
 	od_keyword("ldap_endpoint_name", OD_LLDAP_ENDPOINT_NAME),
+	od_keyword("ldap_storage_credentials_attr",
+		   OD_LLDAP_STORAGE_CREDENTIALS_ATTR),
+	od_keyword("ldap_storage_credentials", OD_LLDAP_STORAGE_CREDENTIALS),
+	od_keyword("ldap_storage_username", OD_LLDAP_STORAGE_USERNAME),
+	od_keyword("ldap_storage_password", OD_LLDAP_STORAGE_PASSWORD),
 
 	/* watchdog */
 
@@ -514,6 +528,105 @@ error:
 	return false;
 }
 
+static int od_config_reader_storage_host(od_config_reader_t *reader,
+					 od_rule_storage_t *storage)
+{
+	size_t i;
+	size_t j;
+	size_t tmp;
+	size_t len;
+	size_t endpoint_cnt;
+	size_t closing_bracked_indx;
+	size_t host_len;
+	size_t host_off;
+
+	if (!od_config_reader_string(reader, &storage->host)) {
+		return NOT_OK_RESPONSE;
+	}
+
+	endpoint_cnt = 0;
+	len = strlen(storage->host);
+
+	/* string in format host[,host...] */
+	for (i = 0; i < len; i++) {
+		if (storage->host[i] == ',') {
+			++endpoint_cnt;
+		}
+	}
+	++endpoint_cnt;
+
+	storage->endpoints_count = 0;
+	storage->endpoints =
+		malloc(sizeof(od_storage_endpoint_t) * endpoint_cnt);
+
+	for (i = 0; i < len;) {
+		closing_bracked_indx = len + 1;
+
+		for (j = i; j + 1 < len && storage->host[j + 1] != ','; ++j) {
+			switch (storage->host[j]) {
+			case '[':
+				if (j > i) {
+					return NOT_OK_RESPONSE; /* wrong entry format */
+				}
+				break;
+			case ']':
+				if (closing_bracked_indx < j) {
+					return NOT_OK_RESPONSE; /* wrong entry format */
+				}
+				closing_bracked_indx = j;
+				break;
+			}
+		}
+
+		if (storage->host[i] != '[') {
+			/* block format is  host[,host] */
+			host_len = j - i + 1;
+			host_off = i;
+
+			storage->endpoints[storage->endpoints_count].port = 0;
+		} else {
+			if (closing_bracked_indx == len + 1) {
+				/* matching bracked was not met */
+				return NOT_OK_RESPONSE;
+			}
+			/* [host]:port */
+
+			host_len = closing_bracked_indx - i - 1;
+			host_off = i + 1;
+
+			storage->endpoints[storage->endpoints_count].port = 0;
+			/*    ]:1234 */
+			/*      ^  ^ */
+			/*      iter betwwen this two localtions */
+
+			for (tmp = closing_bracked_indx + 2; tmp <= j; ++tmp) {
+				if (!isdigit(storage->host[tmp])) {
+					return NOT_OK_RESPONSE;
+				}
+				storage->endpoints[storage->endpoints_count]
+					.port *= 10;
+				storage->endpoints[storage->endpoints_count]
+					.port += storage->host[tmp] - '0';
+			}
+		}
+
+		/* copy the host name */
+		storage->endpoints[storage->endpoints_count].host =
+			malloc(sizeof(char) * (host_len + 1));
+		memcpy(storage->endpoints[storage->endpoints_count].host,
+		       storage->host + host_off, host_len);
+		storage->endpoints[storage->endpoints_count].host[host_len] =
+			'\0';
+
+		storage->endpoints_count++;
+
+		/* storage->host[j] == ',' or j == len - 1 */
+		i = j + 2;
+	}
+
+	return OK_RESPONSE;
+}
+
 static int od_config_reader_listen(od_config_reader_t *reader)
 {
 	od_config_t *config = reader->config;
@@ -541,8 +654,9 @@ static int od_config_reader_listen(od_config_reader_t *reader)
 			return NOT_OK_RESPONSE;
 		case OD_PARSER_SYMBOL:
 			/* } */
-			if (token.value.num == '}')
-				return 0;
+			if (token.value.num == '}') {
+				return OK_RESPONSE;
+			}
 			/* fall through */
 		default:
 			od_config_reader_error(
@@ -628,6 +742,7 @@ static int od_config_reader_listen(od_config_reader_t *reader)
 static int od_config_reader_storage(od_config_reader_t *reader,
 				    od_extention_t *extentions)
 {
+	char *tmp = NULL;
 	od_rule_storage_t *storage;
 	storage = od_rules_storage_allocate();
 	if (storage == NULL)
@@ -661,8 +776,9 @@ static int od_config_reader_storage(od_config_reader_t *reader,
 			return NOT_OK_RESPONSE;
 		case OD_PARSER_SYMBOL:
 			/* } */
-			if (token.value.num == '}')
-				return 0;
+			if (token.value.num == '}') {
+				return OK_RESPONSE;
+			}
 			/* fall through */
 		default:
 			od_config_reader_error(
@@ -686,13 +802,37 @@ static int od_config_reader_storage(od_config_reader_t *reader,
 			continue;
 		/* host */
 		case OD_LHOST:
-			if (!od_config_reader_string(reader, &storage->host))
+			if (od_config_reader_storage_host(reader, storage) !=
+			    OK_RESPONSE)
 				return NOT_OK_RESPONSE;
 			continue;
 		/* port */
 		case OD_LPORT:
 			if (!od_config_reader_number(reader, &storage->port))
 				return NOT_OK_RESPONSE;
+			continue;
+		/* target_session_attrs */
+		case OD_LTARGET_SESSION_ATTRS:
+			if (!od_config_reader_string(reader, &tmp)) {
+				return NOT_OK_RESPONSE;
+			}
+
+			if (strcmp(tmp, "read-write") == 0) {
+				storage->target_session_attrs =
+					OD_TARGET_SESSION_ATTRS_RW;
+			} else if (strcmp(tmp, "any") == 0) {
+				storage->target_session_attrs =
+					OD_TARGET_SESSION_ATTRS_ANY;
+			} else if (strcmp(tmp, "read-only") == 0) {
+				storage->target_session_attrs =
+					OD_TARGET_SESSION_ATTRS_RO;
+			} else {
+				return NOT_OK_RESPONSE;
+			}
+
+			free(tmp);
+			tmp = NULL;
+
 			continue;
 		/* tls */
 		case OD_LTLS:
@@ -724,12 +864,13 @@ static int od_config_reader_storage(od_config_reader_t *reader,
 				    reader, &storage->tls_opts->tls_protocols))
 				return NOT_OK_RESPONSE;
 			continue;
-			/* server_max_routing */
+		/* server_max_routing */
 		case OD_LSERVERS_MAX_ROUTING:
 			if (!od_config_reader_number(
 				    reader, &storage->server_max_routing))
 				return NOT_OK_RESPONSE;
 			continue;
+		/* watchdog */
 		case OD_LWATCHDOG:
 			storage->watchdog =
 				od_storage_watchdog_allocate(reader->global);
@@ -840,6 +981,124 @@ static inline int od_config_reader_pgoptions(od_config_reader_t *reader,
 		}
 	}
 }
+
+#ifdef LDAP_FOUND
+
+static inline od_retcode_t
+od_config_reader_ldap_storage_credentials(od_config_reader_t *reader,
+					  od_rule_t *rule)
+{
+	od_ldap_storage_credentials_t *lsc_current;
+	lsc_current = od_ldap_storage_credentials_alloc();
+	if (!lsc_current) {
+		goto error;
+	}
+
+	/* name */
+	if (!od_config_reader_string(reader, &lsc_current->name)) {
+		goto error;
+	}
+
+	if (strlen(lsc_current->name) == 0) {
+		od_config_reader_error(
+			reader, NULL,
+			"empty ldap storage credentials definition");
+		goto error;
+	}
+
+	if (od_ldap_storage_credentials_find(&rule->ldap_storage_creds_list,
+					     lsc_current->name) != NULL) {
+		od_config_reader_error(
+			reader, NULL,
+			"duplicate ldap storage credentials definition: %s",
+			lsc_current->name);
+		goto error;
+	}
+
+	od_rule_ldap_storage_credentials_add(rule, lsc_current);
+
+	/* { */
+	if (!od_config_reader_symbol(reader, '{')) {
+		goto error;
+	}
+
+	for (;;) {
+		od_token_t token;
+		int rc;
+		rc = od_parser_next(&reader->parser, &token);
+		switch (rc) {
+		case OD_PARSER_SYMBOL:
+			/* } */
+			if (token.value.num == '}') {
+				if (lsc_current->lsc_username == NULL) {
+					od_config_reader_error(
+						reader, NULL,
+						"lsc_username in ldap_storage_credentials '%s' is not defined",
+						lsc_current->name);
+					goto error;
+				}
+				if (lsc_current->lsc_password == NULL) {
+					od_config_reader_error(
+						reader, NULL,
+						"lsc_password in ldap_storage_credentials '%s' is not defined",
+						lsc_current->name);
+					goto error;
+				}
+				return OK_RESPONSE;
+			}
+			/* fall through */
+		case OD_PARSER_KEYWORD:
+			break;
+		default:
+			od_config_reader_error(reader, &token,
+					       "unexpected symbol or token");
+			goto error;
+		}
+		od_keyword_t *keyword;
+		keyword = od_keyword_match(od_config_keywords, &token);
+		if (keyword == NULL) {
+			od_config_reader_error(reader, &token,
+					       "unknown parameter");
+			return NOT_OK_RESPONSE;
+		}
+
+		switch (keyword->id) {
+		case OD_LLDAP_STORAGE_USERNAME: {
+			if (!od_config_reader_string(
+				    reader, &lsc_current->lsc_username))
+				goto error;
+			if (strlen(lsc_current->lsc_username) == 0) {
+				od_config_reader_error(
+					reader, &token,
+					"lsc_username in ldap_storage_credentials '%s' cannot be empty",
+					lsc_current->name);
+				goto error;
+			}
+
+		} break;
+		case OD_LLDAP_STORAGE_PASSWORD: {
+			if (!od_config_reader_string(
+				    reader, &lsc_current->lsc_password))
+				goto error;
+			if (strlen(lsc_current->lsc_password) == 0) {
+				od_config_reader_error(
+					reader, &token,
+					"lsc_password in ldap_storage_credentials '%s' cannot be empty",
+					lsc_current->name);
+				goto error;
+			}
+		} break;
+		}
+	}
+
+	return OK_RESPONSE;
+error:
+	if (lsc_current) {
+		od_ldap_storage_credentials_free(lsc_current);
+	}
+	return NOT_OK_RESPONSE;
+}
+#endif
 
 static int od_config_reader_rule_settings(od_config_reader_t *reader,
 					  od_rule_t *rule,
@@ -1055,6 +1314,12 @@ static int od_config_reader_rule_settings(od_config_reader_t *reader,
 						     &rule->ldap_pool_timeout))
 				return NOT_OK_RESPONSE;
 			continue;
+		/* ldap_pool_ttl */
+		case OD_LLDAPPOOL_TTL:
+			if (!od_config_reader_number(reader,
+						     &rule->ldap_pool_ttl))
+				return NOT_OK_RESPONSE;
+			continue;
 #endif
 		/* pool */
 		case OD_LPOOL:
@@ -1183,6 +1448,56 @@ static int od_config_reader_rule_settings(od_config_reader_t *reader,
 				return NOT_OK_RESPONSE;
 			}
 			rule->ldap_endpoint = le;
+			continue;
+#else
+			od_config_reader_error(
+				reader, NULL,
+				"ldap is not supported, check if ldap library is available on the system");
+			return NOT_OK_RESPONSE;
+#endif
+		}
+		case OD_LLDAP_STORAGE_CREDENTIALS_ATTR: {
+#ifdef LDAP_FOUND
+			if (!od_config_reader_string(
+				    reader,
+				    &rule->ldap_storage_credentials_attr)) {
+				return NOT_OK_RESPONSE;
+			}
+			if (rule->ldap_endpoint_name == NULL) {
+				od_config_reader_error(
+					reader, NULL,
+					"ldap_endpoint_name is not defined for rule with ldap_storage_credentials_attr '%s'",
+					rule->ldap_storage_credentials_attr);
+				return NOT_OK_RESPONSE;
+			}
+			if (strlen(rule->ldap_storage_credentials_attr) == 0) {
+				od_config_reader_error(
+					reader, NULL,
+					"ldap_storage_credentials_attr cannot be empty for rule with ldap_endpoint_name '%s'",
+					rule->ldap_endpoint_name);
+				return NOT_OK_RESPONSE;
+			}
+			continue;
+#else
+			od_config_reader_error(
+				reader, NULL,
+				"ldap is not supported, check if ldap library is available on the system");
+			return NOT_OK_RESPONSE;
+#endif
+		}
+		case OD_LLDAP_STORAGE_CREDENTIALS: {
+#ifdef LDAP_FOUND
+			if (od_config_reader_ldap_storage_credentials(
+				    reader, rule) != OK_RESPONSE) {
+				return NOT_OK_RESPONSE;
+			}
+			if (rule->ldap_storage_credentials_attr == NULL) {
+				od_config_reader_error(
+					reader, NULL,
+					"ldap_storage_credentials_attr is not defined for rule with ldap_endpoint_name '%s'",
+					rule->ldap_endpoint_name);
+				return NOT_OK_RESPONSE;
+			}
 			continue;
 #else
 			od_config_reader_error(
