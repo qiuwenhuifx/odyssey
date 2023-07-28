@@ -110,21 +110,52 @@ static inline int od_backend_startup(od_server_t *server,
 {
 	od_instance_t *instance = server->global->instance;
 	od_route_t *route = server->route;
-	kiwi_fe_arg_t argv[] = { { "user", 5 },
-				 { route->id.user, route->id.user_len },
-				 { "database", 9 },
-				 { route->id.database, route->id.database_len },
-				 { "replication", 12 },
-				 { NULL, 0 } };
-	int argc = 4;
+
+#define DEFAULT_ARGV_SIZE 6
+
+	kiwi_fe_arg_t argv[DEFAULT_ARGV_SIZE +
+			   2 * route->rule->backend_startup_vars_sz];
+
+	kiwi_fe_arg_t default_argv[] = {
+		{ "user", 5 },
+		{ route->id.user, route->id.user_len },
+		{ "database", 9 },
+		{ route->id.database, route->id.database_len },
+		{ "replication", 12 },
+		{ NULL, 0 }
+	};
+
+
+	od_debug(&instance->logger, "startup", NULL, server,
+			"startup server connection with user %s & database %s",  route->id.user, route->id.database);
+
+
+	for (size_t i = 0; i < route->rule->backend_startup_vars_sz; i++) {
+		argv[i << 1].name = route->rule->backend_startup_vars[i].name;
+		argv[i << 1].len =
+			route->rule->backend_startup_vars[i].name_len + 1;
+		argv[i << 1 | 1].name =
+			route->rule->backend_startup_vars[i].value;
+		argv[i << 1 | 1].len =
+			route->rule->backend_startup_vars[i].value_len + 1;
+	}
+
+	int argc = route->rule->backend_startup_vars_sz * 2;
+
+	for (size_t i = 0; i < DEFAULT_ARGV_SIZE; ++i) {
+		argv[argc + i] = default_argv[i];
+	}
+
+	argc += 4;
+
 	if (route->id.physical_rep) {
-		argc = 6;
-		argv[5].name = "on";
-		argv[5].len = 3;
+		argv[argc + 1].name = "on";
+		argv[argc + 1].len = 3;
+		argc += 2;
 	} else if (route->id.logical_rep) {
-		argc = 6;
-		argv[5].name = "database";
-		argv[5].len = 9;
+		argv[argc + 1].name = "database";
+		argv[argc + 1].len = 9;
+		argc += 2;
 	}
 
 	machine_msg_t *msg;
@@ -145,13 +176,13 @@ static inline int od_backend_startup(od_server_t *server,
 	while (1) {
 		msg = od_read(&server->io, UINT32_MAX);
 		if (msg == NULL) {
-			od_error(&instance->logger, "startup", NULL, server,
+			od_error(&instance->logger, "startup", client, server,
 				 "read error: %s", od_io_error(&server->io));
 			return -1;
 		}
 
 		kiwi_be_type_t type = *(char *)machine_msg_data(msg);
-		od_debug(&instance->logger, "startup", NULL, server,
+		od_debug(&instance->logger, "startup", client, server,
 			 "received packet type: %s",
 			 kiwi_be_type_to_string(type));
 
@@ -174,7 +205,7 @@ static inline int od_backend_startup(od_server_t *server,
 			machine_msg_free(msg);
 			if (rc == -1) {
 				od_error(
-					&instance->logger, "startup", NULL,
+					&instance->logger, "startup", client,
 					server,
 					"failed to parse BackendKeyData message");
 				return -1;
@@ -192,7 +223,7 @@ static inline int od_backend_startup(od_server_t *server,
 			if (rc == -1) {
 				machine_msg_free(msg);
 				od_error(
-					&instance->logger, "startup", NULL,
+					&instance->logger, "startup", client,
 					server,
 					"failed to parse ParameterStatus message");
 				return -1;
@@ -234,7 +265,7 @@ static inline int od_backend_startup(od_server_t *server,
 			return -1;
 		default:
 			machine_msg_free(msg);
-			od_debug(&instance->logger, "startup", NULL, server,
+			od_debug(&instance->logger, "startup", client, server,
 				 "unexpected message: %s",
 				 kiwi_be_type_to_string(type));
 			return -1;
@@ -569,11 +600,16 @@ int od_backend_connect(od_server_t *server, char *context,
 		return NOT_OK_RESPONSE;
 	case OD_TARGET_SESSION_ATTRS_ANY:
 	/* fall throught */
-	default:
+	default:;
 		/* use rr_counter here */
-		rc = od_backend_connect_to(server, context,
-					   storage->endpoints[0].host,
-					   storage->endpoints[0].port,
+		char *host = NULL; /* For UNIX socket */
+		int port = storage->port;
+		if (storage->endpoints_count) {
+			host = storage->endpoints[0].host;
+			if (storage->endpoints[0].port)
+				port = storage->endpoints[0].port;
+		}
+		rc = od_backend_connect_to(server, context, host, port,
 					   storage->tls_opts);
 		if (rc == NOT_OK_RESPONSE) {
 			return NOT_OK_RESPONSE;
@@ -594,11 +630,16 @@ int od_backend_connect_cancel(od_server_t *server, od_rule_storage_t *storage,
 	od_instance_t *instance = server->global->instance;
 	/* connect to server */
 	int rc;
-	rc = od_backend_connect_to(
-		server, "cancel",
-		storage->endpoints[server->endpoint_selector].host,
-		storage->endpoints[server->endpoint_selector].port,
-		storage->tls_opts);
+	char *host = NULL; /* For UNIX socket */
+	int port = storage->port;
+	if (storage->endpoints_count) {
+		host = storage->endpoints[server->endpoint_selector].host;
+		if (storage->endpoints[server->endpoint_selector].port)
+			port = storage->endpoints[server->endpoint_selector]
+				       .port;
+	}
+	rc = od_backend_connect_to(server, "cancel", host, port,
+				   storage->tls_opts);
 	if (rc == NOT_OK_RESPONSE) {
 		return NOT_OK_RESPONSE;
 	}

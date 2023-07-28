@@ -194,18 +194,21 @@ od_retcode_t od_ldap_server_prepare(od_logger_t *logger, od_ldap_server_t *serv,
 				   LDAP_SCOPE_SUBTREE, filter, attributes, 0,
 				   &search_message);
 
-		od_debug(logger, "auth_ldap", NULL, NULL,
-			 "basednn search result: %d", rc);
+		od_debug(logger, "auth_ldap", client, NULL,
+				 "basedn search entries with filter: %s and attrib %s ", filter, attributes[0]);
 
 		if (rc != LDAP_SUCCESS) {
+			od_error(logger, "auth_ldap", client, NULL,
+				 "basednn search result: %d", rc);
 			free(filter);
 			return NOT_OK_RESPONSE;
 		}
 
 		count = ldap_count_entries(serv->conn, search_message);
-		od_debug(logger, "auth_ldap", NULL, NULL,
-			 "basedn search entries count: %d", count);
 		if (count != 1) {
+			od_error(logger, "auth_ldap", client, NULL,
+				 "basedn search entries count: %d", count);
+
 			if (count == 0) {
 				free(filter);
 				ldap_msgfree(search_message);
@@ -259,12 +262,12 @@ od_retcode_t od_ldap_server_prepare(od_logger_t *logger, od_ldap_server_t *serv,
 	} else {
 		od_asprintf(&auth_user, "%s%s%s",
 			    serv->endpoint->ldapprefix ?
-				    serv->endpoint->ldapprefix :
-				    "",
+					  serv->endpoint->ldapprefix :
+					  "",
 			    client->startup.user.value,
 			    serv->endpoint->ldapsuffix ?
-				    serv->endpoint->ldapsuffix :
-				    "");
+					  serv->endpoint->ldapsuffix :
+					  "");
 	}
 
 	client->ldap_auth_dn = auth_user;
@@ -299,14 +302,16 @@ od_retcode_t od_ldap_server_init(od_logger_t *logger, od_ldap_server_t *server,
 
 	rc = ldap_simple_bind_s(server->conn,
 				server->endpoint->ldapbinddn ?
-					server->endpoint->ldapbinddn :
-					"",
+					      server->endpoint->ldapbinddn :
+					      "",
 				server->endpoint->ldapbindpasswd ?
-					server->endpoint->ldapbindpasswd :
-					"");
+					      server->endpoint->ldapbindpasswd :
+					      "");
 
-	od_debug(logger, "auth_ldap", NULL, NULL,
-		 "basednn simple bind result: %d", rc);
+	if (rc) {
+		od_error(logger, "auth_ldap", NULL, NULL,
+			 "basednn simple bind result: %d", rc);
+	}
 
 	return rc;
 }

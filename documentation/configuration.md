@@ -611,6 +611,28 @@ ldap_endpoint "ldap1" {
 }
 ```
 
+#### ldap\_pool\_size *integer*
+
+Ldap server pool size
+
+Keep the number of servers in the pool as much as 'pool\_size'.
+Clients are put in a wait queue, when all servers are busy.
+
+Set to zero to disable.
+
+`ldap_pool_size 10`
+
+#### ldap\_pool\_timeout *integer*
+
+Ldap server pool timeout
+
+Time to wait in milliseconds for an available server.
+Disconnect client on timeout reach.
+
+Set to zero to disable.
+
+`ldap_pool_timeout 1000`
+
 #### ldap\_pool\_ttl *integer*
 
 Ldap server pool idle timeout.
@@ -684,6 +706,27 @@ Execute `DISCARD ALL` and reset client parameters before using server
 from the pool.
 
 `pool_discard no`
+
+#### pool\_smart\_discard *yes|no*
+
+When this parameter is enabled, Odyssey sends smart discard query instead of default `DISCARD ALL` when it
+returns connection to the pool. Its default value may be overwritten by pool\_discard\_string setting.
+
+#### pool\_discard\_string *string*
+
+When resetting a database connection, a pre-defined query string is sent to the server. This query string consists of a set of SQL statements that will be executed during a `DISCARD ALL` command, except for `DEALLOCATE ALL`. The default query string includes the following statements:
+
+```sql
+SET SESSION AUTHORIZATION DEFAULT;
+RESET ALL;
+CLOSE ALL;
+UNLISTEN *;
+SELECT pg_advisory_unlock_all();
+DISCARD PLANS;
+DISCARD SEQUENCES;DISCARD TEMP;
+```
+
+This sequence of statements is designed to reset the connection to a clean state, without affecting the authentication credentials of the session. By executing these queries, any open transactions will be closed, locks will be released, and any cached execution plans and sequences will be discarded.
 
 #### pool\_cancel *yes|no*
 

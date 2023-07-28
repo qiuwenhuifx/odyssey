@@ -122,8 +122,16 @@ static inline void od_system_server(void *arg)
 		od_worker_pool_t *worker_pool = server->global->worker_pool;
 		od_atomic_u32_inc(&router->clients_routing);
 		od_worker_pool_feed(worker_pool, msg);
+		bool warning_emitted = false;
 		while (od_atomic_u32_of(&router->clients_routing) >=
 		       (uint32_t)instance->config.client_max_routing) {
+			if (!warning_emitted) {
+				/* TODO: AB: Use WARNING here, it's not an error */
+				od_error(&instance->logger,
+					 "client_max_routing", client, NULL,
+					 "client is waiting in routing queue");
+				warning_emitted = true;
+			}
 			machine_sleep(1);
 		}
 	}
@@ -461,16 +469,16 @@ void od_system_config_reload(od_system_t *system)
 			od_log(&instance->logger, "reload-config", NULL, NULL,
 			       "failed to match listen config for %s:%d",
 			       server->config->host == NULL ?
-				       "(NULL)" :
-				       server->config->host,
+					     "(NULL)" :
+					     server->config->host,
 			       server->config->port);
 		} else if (server->config->tls_opts->tls_mode !=
 			   listen_config->tls_opts->tls_mode) {
 			od_log(&instance->logger, "reload-config", NULL, NULL,
 			       "reloaded tls mode for %s:%d",
 			       server->config->host == NULL ?
-				       "(NULL)" :
-				       server->config->host,
+					     "(NULL)" :
+					     server->config->host,
 			       server->config->port);
 
 			server->config->tls_opts->tls_mode =

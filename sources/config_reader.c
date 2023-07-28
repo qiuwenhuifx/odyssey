@@ -97,6 +97,7 @@ typedef enum {
 	OD_LPOOL_TTL,
 	OD_LPOOL_DISCARD,
 	OD_LPOOL_SMART_DISCARD,
+	OD_LPOOL_DISCARD_QUERY,
 	OD_LPOOL_CANCEL,
 	OD_LPOOL_ROLLBACK,
 	OD_LPOOL_RESERVE_PREPARED_STATEMENT,
@@ -140,6 +141,7 @@ typedef enum {
 	OD_LCATCHUP_TIMEOUT,
 	OD_LCATCHUP_CHECKS,
 	OD_LOPTIONS,
+	OD_LBACKEND_STARTUP_OPTIONS,
 	OD_LHBA_FILE,
 } od_lexeme_t;
 
@@ -249,6 +251,7 @@ static od_keyword_t od_config_keywords[] = {
 	od_keyword("pool_timeout", OD_LPOOL_TIMEOUT),
 	od_keyword("pool_ttl", OD_LPOOL_TTL),
 	od_keyword("pool_discard", OD_LPOOL_DISCARD),
+	od_keyword("pool_discard_query", OD_LPOOL_DISCARD_QUERY),
 	od_keyword("pool_smart_discard", OD_LPOOL_SMART_DISCARD),
 	od_keyword("pool_cancel", OD_LPOOL_CANCEL),
 	od_keyword("pool_rollback", OD_LPOOL_ROLLBACK),
@@ -305,6 +308,8 @@ static od_keyword_t od_config_keywords[] = {
 	/* options */
 
 	od_keyword("options", OD_LOPTIONS),
+
+	od_keyword("backend_startup_options", OD_LBACKEND_STARTUP_OPTIONS),
 
 	/* stats */
 	od_keyword("quantiles", OD_LQUANTILES),
@@ -423,6 +428,9 @@ static bool od_config_reader_quantiles(od_config_reader_t *reader, char *value,
 		c++;
 	}
 	*quantiles = malloc(sizeof(double) * comma_cnt);
+	if (*quantiles == NULL) {
+		return false;
+	}
 	double *array = *quantiles;
 	*count = 0;
 	c = value;
@@ -558,6 +566,9 @@ static int od_config_reader_storage_host(od_config_reader_t *reader,
 	storage->endpoints_count = 0;
 	storage->endpoints =
 		malloc(sizeof(od_storage_endpoint_t) * endpoint_cnt);
+	if (storage->endpoints == NULL) {
+		return NOT_OK_RESPONSE;
+	}
 
 	for (i = 0; i < len;) {
 		closing_bracked_indx = len + 1;
@@ -613,6 +624,9 @@ static int od_config_reader_storage_host(od_config_reader_t *reader,
 		/* copy the host name */
 		storage->endpoints[storage->endpoints_count].host =
 			malloc(sizeof(char) * (host_len + 1));
+		if (storage->endpoints[storage->endpoints_count].host == NULL) {
+			return NOT_OK_RESPONSE;
+		}
 		memcpy(storage->endpoints[storage->endpoints_count].host,
 		       storage->host + host_off, host_len);
 		storage->endpoints[storage->endpoints_count].host[host_len] =
@@ -971,6 +985,92 @@ static inline int od_config_reader_pgoptions(od_config_reader_t *reader,
 			/* } */
 			if (token.value.num == '}')
 				return 0;
+			/* fall through */
+		case OD_PARSER_KEYWORD:
+		default:
+			od_config_reader_error(
+				reader, &token,
+				"incorrect or unexpected parameter");
+			return NOT_OK_RESPONSE;
+		}
+	}
+}
+
+static inline int od_config_reader_backend_pgoptions(od_config_reader_t *reader,
+						     od_rule_t *rule)
+{
+	od_token_t token;
+	int rc;
+	rc = od_parser_next(&reader->parser, &token);
+	switch (rc) {
+	case OD_PARSER_KEYWORD:
+		break;
+	case OD_PARSER_EOF:
+		od_config_reader_error(reader, &token,
+				       "unexpected end of config file");
+		return NOT_OK_RESPONSE;
+	case OD_PARSER_SYMBOL:
+		/* { */
+		if (token.value.num == '{')
+			break;
+		/* fall through */
+	default:
+		od_config_reader_error(reader, &token,
+				       "incorrect or unexpected parameter");
+		return NOT_OK_RESPONSE;
+	}
+
+	untyped_kiwi_var_t *ptr = NULL;
+	rule->backend_startup_vars_sz = 0;
+	size_t backend_startup_vars_alloc_sz = 4;
+	rule->backend_startup_vars = malloc(sizeof(untyped_kiwi_var_t) *
+					    backend_startup_vars_alloc_sz);
+	if (rule->backend_startup_vars == NULL) {
+		/* oom */
+		return NOT_OK_RESPONSE;
+	}
+
+	for (;;) {
+		rc = od_parser_next(&reader->parser, &token);
+		switch (rc) {
+		case OD_PARSER_STRING:
+			assert(rule->backend_startup_vars_sz <=
+			       backend_startup_vars_alloc_sz);
+			if (rule->backend_startup_vars_sz ==
+			    backend_startup_vars_alloc_sz) {
+				backend_startup_vars_alloc_sz *= 2;
+				rule->backend_startup_vars = realloc(
+					rule->backend_startup_vars,
+					sizeof(untyped_kiwi_var_t) *
+						backend_startup_vars_alloc_sz);
+				if (rule->backend_startup_vars == NULL) {
+					/* oom */
+					return NOT_OK_RESPONSE;
+				}
+			}
+
+			ptr = &rule->backend_startup_vars
+				       [rule->backend_startup_vars_sz];
+
+			if (od_config_reader_pgoptions_kv_pair(
+				    reader, &token, &ptr->name, &ptr->name_len,
+				    &ptr->value,
+				    &ptr->value_len) == NOT_OK_RESPONSE) {
+				return NOT_OK_RESPONSE;
+			}
+
+			rule->backend_startup_vars_sz++;
+
+			break;
+		case OD_PARSER_EOF:
+			od_config_reader_error(reader, &token,
+					       "unexpected end of config file");
+			return NOT_OK_RESPONSE;
+		case OD_PARSER_SYMBOL:
+			/* } */
+			if (token.value.num == '}') {
+				return OK_RESPONSE;
+			}
 			/* fall through */
 		case OD_PARSER_KEYWORD:
 		default:
@@ -1360,6 +1460,12 @@ static int od_config_reader_rule_settings(od_config_reader_t *reader,
 				    reader, &rule->pool->smart_discard))
 				return NOT_OK_RESPONSE;
 			continue;
+		/* pool_discard_query */
+		case OD_LPOOL_DISCARD_QUERY:
+			if (!od_config_reader_string(
+				    reader, &rule->pool->discard_query))
+				return NOT_OK_RESPONSE;
+			continue;
 		/* pool_cancel */
 		case OD_LPOOL_CANCEL:
 			if (!od_config_reader_yes_no(reader,
@@ -1542,8 +1648,16 @@ static int od_config_reader_rule_settings(od_config_reader_t *reader,
 				return NOT_OK_RESPONSE;
 			}
 			continue;
+		/* options */
 		case OD_LOPTIONS:
 			if (od_config_reader_pgoptions(reader, &rule->vars) ==
+			    NOT_OK_RESPONSE) {
+				return NOT_OK_RESPONSE;
+			}
+			continue;
+		/* backend startup options */
+		case OD_LBACKEND_STARTUP_OPTIONS:
+			if (od_config_reader_backend_pgoptions(reader, rule) ==
 			    NOT_OK_RESPONSE) {
 				return NOT_OK_RESPONSE;
 			}
@@ -1581,7 +1695,7 @@ static int od_config_reader_route(od_config_reader_t *reader, char *db_name,
 	/* ensure rule does not exists and add new rule */
 	od_rule_t *rule;
 	rule = od_rules_match(reader->rules, db_name, user_name, db_is_default,
-			      user_is_default);
+			      user_is_default, 0);
 	if (rule) {
 		od_errorf(reader->error, "route '%s.%s': is redefined", db_name,
 			  user_name);
@@ -1617,15 +1731,15 @@ static inline int od_config_reader_watchdog(od_config_reader_t *reader,
 					    od_storage_watchdog_t *watchdog,
 					    od_extention_t *extentions)
 {
-	watchdog->route_usr = "watchod_int";
-	watchdog->route_db = "watchod_int";
+	watchdog->route_usr = "watchdog_int";
+	watchdog->route_db = "watchdog_int";
 	int user_name_len = 0;
 	user_name_len = strlen(watchdog->route_usr);
 
 	/* ensure rule does not exists and add new rule */
 	od_rule_t *rule;
 	rule = od_rules_match(reader->rules, watchdog->route_db,
-			      watchdog->route_usr, 0, 0);
+			      watchdog->route_usr, 0, 0, 1);
 	if (rule) {
 		od_errorf(reader->error, "route '%s.%s': is redefined",
 			  watchdog->route_db, watchdog->route_usr);

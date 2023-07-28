@@ -77,13 +77,13 @@ int od_instance_main(od_instance_t *instance, int argc, char **argv)
 
 	// odyssey accept only ONE positional arg - to path config
 	if (od_args_init(&args, instance) != OK_RESPONSE) {
-		goto error;
+		return NOT_OK_RESPONSE;
 	}
 	instance->exec_path = strdup(argv[0]);
 	/* validate command line options */
 	int argindx; // index of fisrt unparsed indx
 	if (argp_parse(&argp, argc, argv, 0, &argindx, &args) != OK_RESPONSE) {
-		goto error;
+		return NOT_OK_RESPONSE;
 	}
 
 	od_log(&instance->logger, "startup", NULL, NULL, "Starting Odyssey");
@@ -160,6 +160,13 @@ int od_instance_main(od_instance_t *instance, int argc, char **argv)
 	/* validate rules */
 	rc = od_rules_validate(&router.rules, &instance->config,
 			       &instance->logger);
+	if (rc == -1) {
+		goto error;
+	}
+
+	/* auto-generate default rule for auth_query if none specified */
+	rc = od_rules_autogenerate_defaults(&router.rules, &instance->logger);
+
 	if (rc == -1) {
 		goto error;
 	}
