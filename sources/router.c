@@ -367,9 +367,9 @@ od_router_status_t od_router_route(od_router_t *router, od_client_t *client)
 		 "matching rule: %s %s with %s routing type to %s client",
 		 rule->db_name, rule->user_name,
 		 rule->pool->routing_type == NULL ? "client visible" :
-						    rule->pool->routing_type,
+							  rule->pool->routing_type,
 		 client->type == OD_POOL_CLIENT_INTERNAL ? "internal" :
-							   "external");
+								 "external");
 	if (!od_rule_matches_client(rule->pool, client->type)) {
 		// emulate not found error
 		od_router_unlock(router);
@@ -655,11 +655,16 @@ attach:
 	server->key_client = client->key;
 
 	/*
+	* XXX: this logic breaks some external solutions that use
+ 	* PostgreSQL logical replication. Need to tests this and fix
+	*
 	 * walsender connections are in "graceful shutdown" mode since we cannot
 	 * reuse it.
-	 */
+	 *
 	if (route->id.physical_rep || route->id.logical_rep)
 		server->offline = 1;
+
+	*/
 
 	od_route_unlock(route);
 
