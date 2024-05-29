@@ -125,6 +125,324 @@ static inline od_rule_auth_t *od_rules_auth_find(od_rule_t *rule, char *name)
 	return NULL;
 }
 
+od_group_t *od_rules_group_allocate(od_global_t *global)
+{
+	/* Allocate and force defaults */
+	od_group_t *group;
+	group = calloc(1, sizeof(*group));
+	if (group == NULL)
+		return NULL;
+	group->global = global;
+	group->check_retry = 10;
+	group->online = 1;
+
+	od_list_init(&group->link);
+	return group;
+}
+
+static inline int od_rule_update_auth(od_route_t *route, void **argv)
+{
+	od_rule_t *rule = (od_rule_t *)argv[0];
+	od_rule_t *group_rule = (od_rule_t *)argv[1];
+
+	/* auth */
+	rule->auth = group_rule->auth;
+	rule->auth_mode = group_rule->auth_mode;
+	rule->auth_query = group_rule->auth_query;
+	rule->auth_query_db = group_rule->auth_query_db;
+	rule->auth_query_user = group_rule->auth_query_user;
+	rule->auth_common_name_default = group_rule->auth_common_name_default;
+	rule->auth_common_names = group_rule->auth_common_names;
+	rule->auth_common_names_count = group_rule->auth_common_names_count;
+
+#ifdef PAM_FOUND
+	rule->auth_pam_service = group_rule->auth_pam_service;
+	rule->auth_pam_data = group_rule->auth_pam_data;
+#endif
+
+#ifdef LDAP_FOUND
+	rule->ldap_endpoint_name = group_rule->ldap_endpoint_name;
+	rule->ldap_endpoint = group_rule->ldap_endpoint;
+	rule->ldap_pool_timeout = group_rule->ldap_pool_timeout;
+	rule->ldap_pool_size = group_rule->ldap_pool_size;
+	rule->ldap_pool_ttl = group_rule->ldap_pool_ttl;
+	rule->ldap_storage_creds_list = group_rule->ldap_storage_creds_list;
+	rule->ldap_storage_credentials_attr =
+		group_rule->ldap_storage_credentials_attr;
+#endif
+
+	rule->auth_module = group_rule->auth_module;
+
+	/* password */
+	rule->password = group_rule->password;
+	rule->password_len = group_rule->password_len;
+
+	return 0;
+}
+
+void od_rules_group_checker_run(void *arg)
+{
+	od_group_checker_run_args *args = (od_group_checker_run_args *)arg;
+	od_rule_t *group_rule = args->rule;
+	od_group_t *group = group_rule->group;
+	od_rules_t *rules = args->rules;
+	od_list_t *i_copy = args->i_copy;
+	od_global_t *global = group->global;
+	od_router_t *router = global->router;
+	od_instance_t *instance = global->instance;
+
+	od_debug(&instance->logger, "group_checker", NULL, NULL,
+		 "start group checking");
+
+	/* create internal auth client */
+	od_client_t *group_checker_client;
+	group_checker_client =
+		od_client_allocate_internal(global, "rule-group-checker");
+	if (group_checker_client == NULL) {
+		od_error(&instance->logger, "group_checker", NULL, NULL,
+			 "route rule group_checker failed to allocate client");
+		return;
+	}
+
+	group_checker_client->global = global;
+	group_checker_client->type = OD_POOL_CLIENT_INTERNAL;
+	od_id_generate(&group_checker_client->id, "a");
+
+	/* set storage user and database */
+	kiwi_var_set(&group_checker_client->startup.user, KIWI_VAR_UNDEF,
+		     group->route_usr, strlen(group->route_usr) + 1);
+
+	kiwi_var_set(&group_checker_client->startup.database, KIWI_VAR_UNDEF,
+		     group->route_db, strlen(group->route_db) + 1);
+
+	machine_msg_t *msg;
+	char *group_member;
+	int rc;
+
+	/* route */
+	od_router_status_t status;
+	status = od_router_route(router, group_checker_client);
+	od_debug(&instance->logger, "group_checker", group_checker_client, NULL,
+		 "routing to internal group_checker route status: %s",
+		 od_router_status_to_str(status));
+
+	if (status != OD_ROUTER_OK) {
+		od_error(&instance->logger, "group_checker",
+			 group_checker_client, NULL,
+			 "route rule group_checker failed: %s",
+			 od_router_status_to_str(status));
+		return;
+	}
+
+	for (;;) {
+		/* attach client to some route */
+		status = od_router_attach(router, group_checker_client, false);
+		od_debug(
+			&instance->logger, "group_checker",
+			group_checker_client, NULL,
+			"attaching group_checker client to backend connection status: %s",
+			od_router_status_to_str(status));
+
+		if (status != OD_ROUTER_OK) {
+			/* 1 second soft interval */
+			machine_sleep(1000);
+			continue;
+		}
+		od_server_t *server;
+		server = group_checker_client->server;
+		od_debug(&instance->logger, "group_checker",
+			 group_checker_client, server,
+			 "attached to server %s%.*s", server->id.id_prefix,
+			 (int)sizeof(server->id.id), server->id.id);
+
+		/* connect to server, if necessary */
+		if (server->io.io == NULL) {
+			rc = od_backend_connect(server, "group_checker", NULL,
+						group_checker_client);
+			if (rc == NOT_OK_RESPONSE) {
+				od_debug(
+					&instance->logger, "group_checker",
+					group_checker_client, server,
+					"backend connect failed, retry after 1 sec");
+				od_router_close(router, group_checker_client);
+				/* 1 second soft interval */
+				machine_sleep(1000);
+				continue;
+			}
+		}
+
+		for (int retry = 0; retry < group->check_retry; ++retry) {
+			if (od_backend_query_send(
+				    server, "group_checker", group->group_query,
+				    NULL, strlen(group->group_query) + 1) ==
+			    NOT_OK_RESPONSE) {
+				/* Retry later. TODO: Add logging. */
+				break;
+			}
+
+			int response_is_read = 0;
+			od_list_t members;
+			od_list_init(&members);
+			od_group_member_name_item_t *member;
+
+			while (1) {
+				msg = od_read(&server->io, UINT32_MAX);
+				if (msg == NULL) {
+					if (!machine_timedout()) {
+						od_error(&instance->logger,
+							 "group_checker",
+							 server->client, server,
+							 "read error: %s",
+							 od_io_error(
+								 &server->io));
+					}
+				}
+
+				kiwi_be_type_t type;
+				type = *(char *)machine_msg_data(msg);
+
+				od_debug(&instance->logger, "group_checker",
+					 server->client, server, "%s",
+					 kiwi_be_type_to_string(type));
+
+				switch (type) {
+				case KIWI_BE_ERROR_RESPONSE:
+					od_backend_error(server,
+							 "group_checker",
+							 machine_msg_data(msg),
+							 machine_msg_size(msg));
+					{
+						rc = NOT_OK_RESPONSE;
+						response_is_read = 1;
+						break;
+					}
+				case KIWI_BE_DATA_ROW: {
+					rc = od_group_parse_val_datarow(
+						msg, &group_member);
+					member = od_group_member_name_item_add(
+						&members);
+					member->value = group_member;
+					break;
+				}
+				case KIWI_BE_READY_FOR_QUERY:
+					od_backend_ready(server,
+							 machine_msg_data(msg),
+							 machine_msg_size(msg));
+
+					machine_msg_free(msg);
+					response_is_read = 1;
+					break;
+				default:
+					break;
+				}
+
+				if (response_is_read)
+					break;
+			}
+
+			od_router_close(router, group_checker_client);
+
+			bool have_default = false;
+			od_list_t *i;
+			od_list_foreach(&members, i)
+			{
+				od_group_member_name_item_t *member_name;
+				member_name = od_container_of(
+					i, od_group_member_name_item_t, link);
+
+				od_list_t *j = i_copy;
+				od_list_foreach_with_start(&rules->rules, j)
+				{
+					od_rule_t *rule;
+					rule = od_container_of(j, od_rule_t,
+							       link);
+
+					if (rule->obsolete ||
+					    rule->pool->routing ==
+						    OD_RULE_POOL_INTERNAL ||
+					    rule->db_is_default !=
+						    group_rule->db_is_default)
+						continue;
+
+					if (rule->user_is_default) {
+						have_default = true;
+					} else if (strcmp(member_name->value,
+							  rule->user_name) ==
+						   0) {
+						void *argv[] = { rule,
+								 group_rule };
+						od_router_foreach(
+							router,
+							od_rule_update_auth,
+							argv);
+						member_name->is_checked = 1;
+					}
+				}
+			}
+
+			// TODO: handle members with is_checked = 0. these rules should be inherited from the default one, if there is one
+
+			if (rc == OK_RESPONSE) {
+				od_debug(&instance->logger, "group_checker",
+					 group_checker_client, server,
+					 "group check success");
+				break;
+			}
+
+			// retry
+		}
+
+		/* detach and unroute */
+		if (group_checker_client->server) {
+			od_router_detach(router, group_checker_client);
+		}
+
+		if (group->online == 0) {
+			od_debug(&instance->logger, "group_checker",
+				 group_checker_client, NULL,
+				 "deallocating obsolete group_checker");
+			od_client_free(group_checker_client);
+			od_group_free(group);
+			return;
+		}
+
+		/* 7 second soft interval */
+		machine_sleep(7000);
+	}
+}
+
+od_retcode_t od_rules_groups_checkers_run(od_logger_t *logger,
+					  od_rules_t *rules)
+{
+	od_list_t *i;
+	od_list_foreach(&rules->rules, i)
+	{
+		od_rule_t *rule;
+		rule = od_container_of(i, od_rule_t, link);
+		if (rule->group) {
+			od_group_checker_run_args *args =
+				malloc(sizeof(od_group_checker_run_args));
+			args->rules = rules;
+			args->rule = rule;
+			args->i_copy = i->next;
+
+			int64_t coroutine_id;
+			coroutine_id = machine_coroutine_create(
+				od_rules_group_checker_run, args);
+			if (coroutine_id == INVALID_COROUTINE_ID) {
+				od_error(
+					logger, "system", NULL, NULL,
+					"failed to start group_checker coroutine");
+				return NOT_OK_RESPONSE;
+			}
+
+			machine_sleep(1000);
+		}
+	}
+
+	return OK_RESPONSE;
+}
+
 od_rule_t *od_rules_add(od_rules_t *rules)
 {
 	od_rule_t *rule;
@@ -178,6 +496,8 @@ void od_rules_rule_free(od_rule_t *rule)
 		free(rule->db_name);
 	if (rule->user_name)
 		free(rule->user_name);
+	if (rule->address_range.string_value)
+		free(rule->address_range.string_value);
 	if (rule->password)
 		free(rule->password);
 	if (rule->auth)
@@ -200,6 +520,10 @@ void od_rules_rule_free(od_rule_t *rule)
 		free(rule->storage_password);
 	if (rule->pool)
 		od_rule_pool_free(rule->pool);
+	if (rule->group)
+		rule->group->online = 0;
+	if (rule->mdb_iamproxy_socket_path)
+		free(rule->mdb_iamproxy_socket_path);
 
 	od_list_t *i, *n;
 	od_list_foreach_safe(&rule->auth_common_names, i, n)
@@ -253,13 +577,19 @@ void od_rules_unref(od_rule_t *rule)
 		od_rules_rule_free(rule);
 }
 
-od_rule_t *od_rules_forward(od_rules_t *rules, char *db_name, char *user_name,
-			    int pool_internal)
+static od_rule_t *od_rules_forward_default(od_rules_t *rules, char *db_name,
+					   char *user_name,
+					   struct sockaddr_storage *user_addr,
+					   int pool_internal)
 {
-	od_rule_t *rule_db_user = NULL;
-	od_rule_t *rule_db_default = NULL;
-	od_rule_t *rule_default_user = NULL;
-	od_rule_t *rule_default_default = NULL;
+	od_rule_t *rule_db_user_default = NULL;
+	od_rule_t *rule_db_default_default = NULL;
+	od_rule_t *rule_default_user_default = NULL;
+	od_rule_t *rule_default_default_default = NULL;
+	od_rule_t *rule_db_user_addr = NULL;
+	od_rule_t *rule_db_default_addr = NULL;
+	od_rule_t *rule_default_user_addr = NULL;
+	od_rule_t *rule_default_default_addr = NULL;
 
 	od_list_t *i;
 	od_list_foreach(&rules->rules, i)
@@ -269,7 +599,7 @@ od_rule_t *od_rules_forward(od_rules_t *rules, char *db_name, char *user_name,
 		if (rule->obsolete)
 			continue;
 		if (pool_internal) {
-			if (rule->pool->routing != OD_RULE_POOL_INTERVAL) {
+			if (rule->pool->routing != OD_RULE_POOL_INTERNAL) {
 				continue;
 			}
 		} else {
@@ -279,33 +609,125 @@ od_rule_t *od_rules_forward(od_rules_t *rules, char *db_name, char *user_name,
 			}
 		}
 		if (rule->db_is_default) {
-			if (rule->user_is_default)
-				rule_default_default = rule;
-			else if (strcmp(rule->user_name, user_name) == 0)
-				rule_default_user = rule;
+			if (rule->user_is_default) {
+				if (rule->address_range.is_default)
+					rule_default_default_default = rule;
+				else if (od_address_validate(
+						 &rule->address_range,
+						 user_addr))
+					rule_default_default_addr = rule;
+			} else if (strcmp(rule->user_name, user_name) == 0) {
+				if (rule->address_range.is_default)
+					rule_default_user_default = rule;
+				else if (od_address_validate(
+						 &rule->address_range,
+						 user_addr))
+					rule_default_user_addr = rule;
+			}
 		} else if (strcmp(rule->db_name, db_name) == 0) {
-			if (rule->user_is_default)
-				rule_db_default = rule;
-			else if (strcmp(rule->user_name, user_name) == 0)
-				rule_db_user = rule;
+			if (rule->user_is_default) {
+				if (rule->address_range.is_default)
+					rule_db_default_default = rule;
+				else if (od_address_validate(
+						 &rule->address_range,
+						 user_addr))
+					rule_db_default_addr = rule;
+			} else if (strcmp(rule->user_name, user_name) == 0) {
+				if (rule->address_range.is_default)
+					rule_db_user_default = rule;
+				else if (od_address_validate(
+						 &rule->address_range,
+						 user_addr))
+					rule_db_user_addr = rule;
+			}
 		}
 	}
 
-	if (rule_db_user)
-		return rule_db_user;
+	if (rule_db_user_addr)
+		return rule_db_user_addr;
 
-	if (rule_db_default)
-		return rule_db_default;
+	if (rule_db_user_default)
+		return rule_db_user_default;
 
-	if (rule_default_user)
-		return rule_default_user;
+	if (rule_db_default_addr)
+		return rule_db_default_addr;
 
-	return rule_default_default;
+	if (rule_default_user_addr)
+		return rule_default_user_addr;
+
+	if (rule_db_default_default)
+		return rule_db_default_default;
+
+	if (rule_default_user_default)
+		return rule_default_user_default;
+
+	if (rule_default_default_addr)
+		return rule_default_default_addr;
+
+	return rule_default_default_default;
+}
+
+static od_rule_t *
+od_rules_forward_sequential(od_rules_t *rules, char *db_name, char *user_name,
+			    struct sockaddr_storage *user_addr,
+			    int pool_internal)
+{
+	od_list_t *i;
+	od_rule_t *rule_matched = NULL;
+	bool db_matched = false, user_matched = false, addr_matched = false;
+	od_list_foreach(&rules->rules, i)
+	{
+		od_rule_t *rule;
+		rule = od_container_of(i, od_rule_t, link);
+	}
+	od_list_foreach(&rules->rules, i)
+	{
+		od_rule_t *rule;
+		rule = od_container_of(i, od_rule_t, link);
+		if (rule->obsolete) {
+			continue;
+		}
+		if (pool_internal) {
+			if (rule->pool->routing != OD_RULE_POOL_INTERNAL) {
+				continue;
+			}
+		} else {
+			if (rule->pool->routing !=
+			    OD_RULE_POOL_CLIENT_VISIBLE) {
+				continue;
+			}
+		}
+		db_matched = rule->db_is_default ||
+			     (strcmp(rule->db_name, db_name) == 0);
+		user_matched = rule->user_is_default ||
+			       (strcmp(rule->user_name, user_name) == 0);
+		addr_matched =
+			rule->address_range.is_default ||
+			od_address_validate(&rule->address_range, user_addr);
+		if (db_matched && user_matched && addr_matched) {
+			rule_matched = rule;
+			break;
+		}
+	}
+	assert(rule_matched);
+	return rule_matched;
+}
+
+od_rule_t *od_rules_forward(od_rules_t *rules, char *db_name, char *user_name,
+			    struct sockaddr_storage *user_addr,
+			    int pool_internal, int sequential)
+{
+	if (sequential) {
+		return od_rules_forward_sequential(rules, db_name, user_name,
+						   user_addr, pool_internal);
+	}
+	return od_rules_forward_default(rules, db_name, user_name, user_addr,
+					pool_internal);
 }
 
 od_rule_t *od_rules_match(od_rules_t *rules, char *db_name, char *user_name,
-			  int db_is_default, int user_is_default,
-			  int pool_internal)
+			  od_address_range_t *address_range, int db_is_default,
+			  int user_is_default, int pool_internal)
 {
 	od_list_t *i;
 	od_list_foreach(&rules->rules, i)
@@ -314,7 +736,7 @@ od_rule_t *od_rules_match(od_rules_t *rules, char *db_name, char *user_name,
 		rule = od_container_of(i, od_rule_t, link);
 		/* filter out internal or client-vidible rules */
 		if (pool_internal) {
-			if (rule->pool->routing != OD_RULE_POOL_INTERVAL) {
+			if (rule->pool->routing != OD_RULE_POOL_INTERNAL) {
 				continue;
 			}
 		} else {
@@ -325,15 +747,25 @@ od_rule_t *od_rules_match(od_rules_t *rules, char *db_name, char *user_name,
 		}
 		if (strcmp(rule->db_name, db_name) == 0 &&
 		    strcmp(rule->user_name, user_name) == 0 &&
+		    rule->address_range.is_default ==
+			    address_range->is_default &&
 		    rule->db_is_default == db_is_default &&
-		    rule->user_is_default == user_is_default)
-			return rule;
+		    rule->user_is_default == user_is_default) {
+			if (address_range->is_default == 0) {
+				if (od_address_range_equals(&rule->address_range,
+							    address_range))
+					return rule;
+			} else {
+				return rule;
+			}
+		}
 	}
 	return NULL;
 }
 
-static inline od_rule_t *od_rules_match_active(od_rules_t *rules, char *db_name,
-					       char *user_name)
+static inline od_rule_t *
+od_rules_match_active(od_rules_t *rules, char *db_name, char *user_name,
+		      od_address_range_t *address_range)
 {
 	od_list_t *i;
 	od_list_foreach(&rules->rules, i)
@@ -343,7 +775,9 @@ static inline od_rule_t *od_rules_match_active(od_rules_t *rules, char *db_name,
 		if (rule->obsolete)
 			continue;
 		if (strcmp(rule->db_name, db_name) == 0 &&
-		    strcmp(rule->user_name, user_name) == 0)
+		    strcmp(rule->user_name, user_name) == 0 &&
+		    od_address_range_equals(&rule->address_range,
+					    address_range))
 			return rule;
 	}
 	return NULL;
@@ -575,16 +1009,25 @@ __attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src,
 	int count_mark = 0;
 	int count_deleted = 0;
 	int count_new = 0;
+	int src_length = 0;
+
+	/* set order for new rules */
+	od_list_t *i;
+	od_list_foreach(&src->rules, i)
+	{
+		od_rule_t *rule;
+		rule = od_container_of(i, od_rule_t, link);
+		rule->order = src_length;
+		src_length++;
+	}
 
 	/* mark all rules for obsoletion */
-	od_list_t *i;
 	od_list_foreach(&rules->rules, i)
 	{
 		od_rule_t *rule;
 		rule = od_container_of(i, od_rule_t, link);
 		rule->mark = 1;
 		count_mark++;
-
 		od_hashmap_empty(rule->storage->acache);
 	}
 
@@ -605,7 +1048,9 @@ __attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src,
 			rule_new = od_container_of(j, od_rule_t, link);
 			if (strcmp(rule_old->user_name, rule_new->user_name) ==
 				    0 &&
-			    strcmp(rule_old->db_name, rule_new->db_name) == 0) {
+			    strcmp(rule_old->db_name, rule_new->db_name) == 0 &&
+			    od_address_range_equals(&rule_old->address_range,
+						    &rule_new->address_range)) {
 				ok = 1;
 				break;
 			}
@@ -620,6 +1065,9 @@ __attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src,
 					       rule_old->user_name_len);
 			rk->db_name = strndup(rule_old->db_name,
 					      rule_old->db_name_len);
+
+			od_address_range_copy(&rule_old->address_range,
+					      &rk->address_range);
 
 			od_list_append(deleted, &rk->link);
 		}
@@ -641,7 +1089,9 @@ __attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src,
 			rule_old = od_container_of(j, od_rule_t, link);
 			if (strcmp(rule_old->user_name, rule_new->user_name) ==
 				    0 &&
-			    strcmp(rule_old->db_name, rule_new->db_name) == 0) {
+			    strcmp(rule_old->db_name, rule_new->db_name) == 0 &&
+			    od_address_range_equals(&rule_old->address_range,
+						    &rule_new->address_range)) {
 				ok = 1;
 				break;
 			}
@@ -657,6 +1107,9 @@ __attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src,
 			rk->db_name = strndup(rule_new->db_name,
 					      rule_new->db_name_len);
 
+			od_address_range_copy(&rule_new->address_range,
+					      &rk->address_range);
+
 			od_list_append(added, &rk->link);
 		}
 	};
@@ -670,11 +1123,13 @@ __attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src,
 		/* find and compare origin rule */
 		od_rule_t *origin;
 		origin = od_rules_match_active(rules, rule->db_name,
-					       rule->user_name);
+					       rule->user_name,
+					       &rule->address_range);
 		if (origin) {
 			if (od_rules_rule_compare(origin, rule)) {
 				origin->mark = 0;
 				count_mark--;
+				origin->order = rule->order;
 				continue;
 				/* select rules with changes what needed disconnect */
 			} else if (!od_rules_rule_compare_to_drop(origin,
@@ -688,6 +1143,10 @@ __attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src,
 						       origin->user_name_len);
 				rk->db_name = strndup(origin->db_name,
 						      origin->db_name_len);
+
+				od_address_range_copy(&origin->address_range,
+						      &rk->address_range);
+
 				od_list_append(to_drop, &rk->link);
 			}
 
@@ -727,17 +1186,37 @@ __attribute__((hot)) int od_rules_merge(od_rules_t *rules, od_rules_t *src,
 		}
 	}
 
+	/* sort rules according order, leaving obsolete at the end of the list */
+	od_list_t **sorted = calloc(src_length, sizeof(od_list_t *));
+	od_list_foreach_safe(&rules->rules, i, n)
+	{
+		od_rule_t *rule;
+		rule = od_container_of(i, od_rule_t, link);
+		if (rule->obsolete) {
+			continue;
+		}
+		assert(rule->order >= 0 && rule->order < src_length &&
+		       sorted[rule->order] == NULL);
+		od_list_unlink(&rule->link);
+		sorted[rule->order] = &rule->link;
+	}
+	for (int s = src_length - 1; s >= 0; s--) {
+		assert(sorted[s] != NULL);
+		od_list_push(&rules->rules, sorted[s]);
+	}
+	free(sorted);
+
 	return count_new + count_mark + count_deleted;
 }
 
 int od_pool_validate(od_logger_t *logger, od_rule_pool_t *pool, char *db_name,
-		     char *user_name)
+		     char *user_name, od_address_range_t *address_range)
 {
 	/* pooling mode */
 	if (!pool->type) {
 		od_error(logger, "rules", NULL, NULL,
-			 "rule '%s.%s': pooling mode is not set", db_name,
-			 user_name);
+			 "rule '%s.%s %s': pooling mode is not set", db_name,
+			 user_name, address_range->string_value);
 		return NOT_OK_RESPONSE;
 	}
 	if (strcmp(pool->type, "session") == 0) {
@@ -748,8 +1227,8 @@ int od_pool_validate(od_logger_t *logger, od_rule_pool_t *pool, char *db_name,
 		pool->pool = OD_RULE_POOL_STATEMENT;
 	} else {
 		od_error(logger, "rules", NULL, NULL,
-			 "rule '%s.%s': unknown pooling mode", db_name,
-			 user_name);
+			 "rule '%s.%s %s': unknown pooling mode", db_name,
+			 user_name, address_range->string_value);
 		return NOT_OK_RESPONSE;
 	}
 
@@ -757,16 +1236,25 @@ int od_pool_validate(od_logger_t *logger, od_rule_pool_t *pool, char *db_name,
 	if (!pool->routing_type) {
 		od_debug(
 			logger, "rules", NULL, NULL,
-			"rule '%s.%s': pool routing mode is not set, assuming \"client_visible\" by default",
-			db_name, user_name);
+			"rule '%s.%s %s': pool routing mode is not set, assuming \"client_visible\" by default",
+			db_name, user_name, address_range->string_value);
 	} else if (strcmp(pool->routing_type, "internal") == 0) {
-		pool->routing = OD_RULE_POOL_INTERVAL;
+		pool->routing = OD_RULE_POOL_INTERNAL;
 	} else if (strcmp(pool->routing_type, "client_visible") == 0) {
 		pool->routing = OD_RULE_POOL_CLIENT_VISIBLE;
 	} else {
 		od_error(logger, "rules", NULL, NULL,
-			 "rule '%s.%s': unknown pool routing mode", db_name,
-			 user_name);
+			 "rule '%s.%s %s': unknown pool routing mode", db_name,
+			 user_name, address_range->string_value);
+		return NOT_OK_RESPONSE;
+	}
+
+	if (pool->routing == OD_RULE_POOL_INTERNAL &&
+	    !address_range->is_default) {
+		od_error(
+			logger, "rules", NULL, NULL,
+			"rule '%s.%s %s': internal rules must have default address_range",
+			db_name, user_name, address_range->string_value);
 		return NOT_OK_RESPONSE;
 	}
 
@@ -775,24 +1263,24 @@ int od_pool_validate(od_logger_t *logger, od_rule_pool_t *pool, char *db_name,
 	    pool->pool == OD_RULE_POOL_SESSION) {
 		od_error(
 			logger, "rules", NULL, NULL,
-			"rule '%s.%s': prepared statements support in session pool makes no sence",
-			db_name, user_name);
+			"rule '%s.%s %s': prepared statements support in session pool makes no sence",
+			db_name, user_name, address_range->string_value);
 		return NOT_OK_RESPONSE;
 	}
 
 	if (pool->reserve_prepared_statement && pool->discard) {
 		od_error(
 			logger, "rules", NULL, NULL,
-			"rule '%s.%s': pool discard is forbidden when using prepared statements support",
-			db_name, user_name);
+			"rule '%s.%s %s': pool discard is forbidden when using prepared statements support",
+			db_name, user_name, address_range->string_value);
 		return NOT_OK_RESPONSE;
 	}
 
 	if (pool->smart_discard && !pool->reserve_prepared_statement) {
 		od_error(
 			logger, "rules", NULL, NULL,
-			"rule '%s.%s': pool smart discard is forbidden without using prepared statements support",
-			db_name, user_name);
+			"rule '%s.%s %s': pool smart discard is forbidden without using prepared statements support",
+			db_name, user_name, address_range->string_value);
 		return NOT_OK_RESPONSE;
 	}
 
@@ -800,8 +1288,9 @@ int od_pool_validate(od_logger_t *logger, od_rule_pool_t *pool, char *db_name,
 		if (strcasestr(pool->discard_query, "DEALLOCATE ALL")) {
 			od_error(
 				logger, "rules", NULL, NULL,
-				"rule '%s.%s': cannot support prepared statements when 'DEALLOCATE ALL' present in discard string",
-				db_name, user_name);
+				"rule '%s.%s %s': cannot support prepared statements when 'DEALLOCATE ALL' present in discard string",
+				db_name, user_name,
+				address_range->string_value);
 			return NOT_OK_RESPONSE;
 		}
 	}
@@ -823,20 +1312,23 @@ int od_rules_autogenerate_defaults(od_rules_t *rules, od_logger_t *logger)
 		/* match storage and make a copy of in the user rules */
 		if (rule->auth_query != NULL &&
 		    !od_rules_match(rules, rule->db_name, rule->user_name,
-				    rule->db_is_default, rule->user_is_default,
-				    1)) {
+				    &rule->address_range, rule->db_is_default,
+				    rule->user_is_default, 1)) {
 			need_autogen = true;
 			break;
 		}
 	}
 
-	if (!need_autogen ||
-	    od_rules_match(rules, "default_db", "default_user", 1, 1, 1)) {
+	od_address_range_t default_address_range =
+		od_address_range_create_default();
+
+	if (!need_autogen || od_rules_match(rules, "default_db", "default_user",
+					    &default_address_range, 1, 1, 1)) {
 		return OK_RESPONSE;
 	}
 
-	default_rule =
-		od_rules_match(rules, "default_db", "default_user", 1, 1, 0);
+	default_rule = od_rules_match(rules, "default_db", "default_user",
+				      &default_address_range, 1, 1, 0);
 	if (!default_rule) {
 		od_log(logger, "config", NULL, NULL,
 		       "skipping default internal rule auto-generation: no default rule provided");
@@ -873,13 +1365,15 @@ int od_rules_autogenerate_defaults(od_rules_t *rules, od_logger_t *logger)
 	if (rule->db_name == NULL)
 		return NOT_OK_RESPONSE;
 
+	rule->address_range = default_address_range;
+
 /* force several default settings */
 #define OD_DEFAULT_INTERNAL_POLL_SZ 0
 	rule->pool->type = strdup("transaction");
 	rule->pool->pool = OD_RULE_POOL_TRANSACTION;
 
 	rule->pool->routing_type = strdup("internal");
-	rule->pool->routing = OD_RULE_POOL_INTERVAL;
+	rule->pool->routing = OD_RULE_POOL_INTERNAL;
 
 	rule->pool->size = OD_DEFAULT_INTERNAL_POLL_SZ;
 	rule->enable_password_passthrough = true;
@@ -901,6 +1395,11 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 		      od_logger_t *logger)
 {
 	/* storages */
+	if (od_list_empty(&rules->storages)) {
+		od_error(logger, "rules", NULL, NULL, "no storage defined");
+		return -1;
+	}
+
 	od_list_t *i;
 	od_list_foreach(&rules->storages, i)
 	{
@@ -973,6 +1472,11 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 	}
 
 	/* rules */
+	if (od_list_empty(&rules->rules)) {
+		od_error(logger, "rules", NULL, NULL, "no rules defined");
+		return -1;
+	}
+
 	od_list_foreach(&rules->rules, i)
 	{
 		od_rule_t *rule;
@@ -980,9 +1484,11 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 
 		/* match storage and make a copy of in the user rules */
 		if (rule->storage_name == NULL) {
-			od_error(logger, "rules", NULL, NULL,
-				 "rule '%s.%s': no rule storage is specified",
-				 rule->db_name, rule->user_name);
+			od_error(
+				logger, "rules", NULL, NULL,
+				"rule '%s.%s %s': no rule storage is specified",
+				rule->db_name, rule->user_name,
+				rule->address_range.string_value);
 			return NOT_OK_RESPONSE;
 		}
 
@@ -990,8 +1496,9 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 		storage = od_rules_storage_match(rules, rule->storage_name);
 		if (storage == NULL) {
 			od_error(logger, "rules", NULL, NULL,
-				 "rule '%s.%s': no rule storage '%s' found",
+				 "rule '%s.%s %s': no rule storage '%s' found",
 				 rule->db_name, rule->user_name,
+				 rule->address_range.string_value,
 				 rule->storage_name);
 			return NOT_OK_RESPONSE;
 		}
@@ -1002,7 +1509,8 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 		}
 
 		if (od_pool_validate(logger, rule->pool, rule->db_name,
-				     rule->user_name) == NOT_OK_RESPONSE) {
+				     rule->user_name,
+				     &rule->address_range) == NOT_OK_RESPONSE) {
 			return NOT_OK_RESPONSE;
 		}
 
@@ -1010,16 +1518,18 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 			if (rule->user_role != OD_RULE_ROLE_UNDEF) {
 				od_error(
 					logger, "rules validate", NULL, NULL,
-					"rule '%s.%s': role set for non-local storage",
-					rule->db_name, rule->user_name);
+					"rule '%s.%s %s': role set for non-local storage",
+					rule->db_name, rule->user_name,
+					rule->address_range.string_value);
 				return NOT_OK_RESPONSE;
 			}
 		} else {
 			if (rule->user_role == OD_RULE_ROLE_UNDEF) {
 				od_error(
 					logger, "rules validate", NULL, NULL,
-					"rule '%s.%s': force stat role for local storage",
-					rule->db_name, rule->user_name);
+					"rule '%s.%s %s': force stat role for local storage",
+					rule->db_name, rule->user_name,
+					rule->address_range.string_value);
 				rule->user_role = OD_RULE_ROLE_STAT;
 			}
 		}
@@ -1028,8 +1538,9 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 		if (!rule->auth) {
 			od_error(
 				logger, "rules", NULL, NULL,
-				"rule '%s.%s': authentication mode is not defined",
-				rule->db_name, rule->user_name);
+				"rule '%s.%s %s': authentication mode is not defined",
+				rule->db_name, rule->user_name,
+				rule->address_range.string_value);
 			return -1;
 		}
 		if (strcmp(rule->auth, "none") == 0) {
@@ -1046,7 +1557,8 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 					logger, "rules", NULL, NULL,
 					"auth query and pam service auth method cannot be "
 					"used simultaneously",
-					rule->db_name, rule->user_name);
+					rule->db_name, rule->user_name,
+					rule->address_range.string_value);
 				return -1;
 			}
 #endif
@@ -1062,8 +1574,9 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 			) {
 
 				od_error(logger, "rules", NULL, NULL,
-					 "rule '%s.%s': password is not set",
-					 rule->db_name, rule->user_name);
+					 "rule '%s.%s %s': password is not set",
+					 rule->db_name, rule->user_name,
+					 rule->address_range.string_value);
 				return -1;
 			}
 		} else if (strcmp(rule->auth, "md5") == 0) {
@@ -1071,8 +1584,9 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 			if (rule->password == NULL &&
 			    rule->auth_query == NULL) {
 				od_error(logger, "rules", NULL, NULL,
-					 "rule '%s.%s': password is not set",
-					 rule->db_name, rule->user_name);
+					 "rule '%s.%s %s': password is not set",
+					 rule->db_name, rule->user_name,
+					 rule->address_range.string_value);
 				return -1;
 			}
 		} else if (strcmp(rule->auth, "scram-sha-256") == 0) {
@@ -1080,8 +1594,9 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 			if (rule->password == NULL &&
 			    rule->auth_query == NULL) {
 				od_error(logger, "rules", NULL, NULL,
-					 "rule '%s.%s': password is not set",
-					 rule->db_name, rule->user_name);
+					 "rule '%s.%s %s': password is not set",
+					 rule->db_name, rule->user_name,
+					 rule->address_range.string_value);
 				return -1;
 			}
 		} else if (strcmp(rule->auth, "cert") == 0) {
@@ -1089,8 +1604,9 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 		} else {
 			od_error(
 				logger, "rules", NULL, NULL,
-				"rule '%s.%s': has unknown authentication mode",
-				rule->db_name, rule->user_name);
+				"rule '%s.%s %s': has unknown authentication mode",
+				rule->db_name, rule->user_name,
+				rule->address_range.string_value);
 			return -1;
 		}
 
@@ -1099,15 +1615,17 @@ int od_rules_validate(od_rules_t *rules, od_config_t *config,
 			if (rule->auth_query_user == NULL) {
 				od_error(
 					logger, "rules", NULL, NULL,
-					"rule '%s.%s': auth_query_user is not set",
-					rule->db_name, rule->user_name);
+					"rule '%s.%s %s': auth_query_user is not set",
+					rule->db_name, rule->user_name,
+					rule->address_range.string_value);
 				return -1;
 			}
 			if (rule->auth_query_db == NULL) {
 				od_error(
 					logger, "rules", NULL, NULL,
-					"rule '%s.%s': auth_query_db is not set",
-					rule->db_name, rule->user_name);
+					"rule '%s.%s %s': auth_query_db is not set",
+					rule->db_name, rule->user_name,
+					rule->address_range.string_value);
 				return -1;
 			}
 		}
@@ -1129,7 +1647,7 @@ int od_rules_cleanup(od_rules_t *rules)
 	od_list_init(&rules->storages);
 #ifdef LDAP_FOUND
 
-	/* TODO: cleanup ldap 
+	/* TODO: cleanup ldap
 	od_list_foreach_safe(&rules->storages, i, n)
 	{
 		od_ldap_endpoint_t *endp;
@@ -1209,8 +1727,8 @@ void od_rules_print(od_rules_t *rules, od_logger_t *logger)
 		rule = od_container_of(i, od_rule_t, link);
 		if (rule->obsolete)
 			continue;
-		od_log(logger, "rules", NULL, NULL, "<%s.%s>", rule->db_name,
-		       rule->user_name);
+		od_log(logger, "rules", NULL, NULL, "<%s.%s %s>", rule->db_name,
+		       rule->user_name, rule->address_range.string_value);
 		od_log(logger, "rules", NULL, NULL,
 		       "  authentication                    %s", rule->auth);
 		if (rule->auth_common_name_default)
@@ -1368,12 +1886,12 @@ void od_rules_print(od_rules_t *rules, od_logger_t *logger)
 			od_log(logger, "rules", NULL, NULL,
 			       "  storage_user                      %s",
 			       rule->storage_user);
-		if (rule->catchup_checks)
+		if (rule->catchup_timeout)
 			od_log(logger, "rules", NULL, NULL,
 			       "  catchup timeout   %d", rule->catchup_timeout);
 		if (rule->catchup_checks)
 			od_log(logger, "rules", NULL, NULL,
-			       "  catchup timeout   %d", rule->catchup_checks);
+			       "  catchup checks    %d", rule->catchup_checks);
 
 		od_log(logger, "rules", NULL, NULL,
 		       "  log_debug                         %s",

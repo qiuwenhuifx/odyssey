@@ -94,6 +94,11 @@ static inline void od_system_server(void *arg)
 			continue;
 		}
 		od_id_generate(&client->id, "c");
+
+		od_dbg_printf_on_dvl_lvl(1, "client %s%.*s has relay %p\n",
+					 client->id.id_prefix,
+					 (signed)sizeof(client->id.id),
+					 client->id.id, &client->relay);
 		rc = od_io_prepare(&client->io, client_io,
 				   instance->config.readahead);
 		if (rc == -1) {
@@ -506,7 +511,6 @@ void od_system_config_reload(od_system_t *system)
 	}
 
 	od_config_free(&config);
-	od_hba_rules_free(&hba_rules);
 
 	if (instance->config.log_config)
 		od_rules_print(&rules, &instance->logger);
@@ -577,6 +581,8 @@ static inline void od_system(void *arg)
 		if (rc == NOT_OK_RESPONSE)
 			return;
 	}
+
+	od_rules_groups_checkers_run(&instance->logger, &router->rules);
 }
 
 void od_system_init(od_system_t *system)

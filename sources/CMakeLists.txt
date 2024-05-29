@@ -24,6 +24,7 @@ set(od_src
     deploy.c
     reset.c
     frontend.c
+    backend_sync.c
     backend.c
     instance.c
     main.c
@@ -47,9 +48,12 @@ set(od_src
     storage.c
     murmurhash.c
     hashmap.c
+    address.c
     hba.c
     hba_reader.c
-    hba_rule.c)
+    hba_rule.c
+    mdb_iamproxy.c
+    group.c)
 
 if (PAM_FOUND)
         list(APPEND od_src pam.c)

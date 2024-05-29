@@ -21,6 +21,12 @@ typedef enum {
 	OD_RULE_AUTH_CERT
 } od_rule_auth_type_t;
 
+typedef struct {
+	od_rule_t *rule;
+	od_rules_t *rules;
+	od_list_t *i_copy;
+} od_group_checker_run_args;
+
 struct od_rule_auth {
 	char *common_name;
 	od_list_t link;
@@ -38,6 +44,7 @@ typedef struct od_rule_key od_rule_key_t;
 struct od_rule_key {
 	char *usr_name;
 	char *db_name;
+	od_address_range_t address_range;
 
 	od_list_t link;
 };
@@ -59,6 +66,7 @@ struct od_rule {
 	int mark;
 	int obsolete;
 	int refs;
+	int order;
 
 	/* id */
 	char *db_name;
@@ -67,6 +75,7 @@ struct od_rule {
 	char *user_name;
 	int user_name_len;
 	int user_is_default;
+	od_address_range_t address_range;
 	od_rule_role_type_t user_role;
 
 	/* auth */
@@ -78,6 +87,9 @@ struct od_rule {
 	int auth_common_name_default;
 	od_list_t auth_common_names;
 	int auth_common_names_count;
+
+	int enable_mdb_iamproxy_auth;
+	char *mdb_iamproxy_socket_path;
 
 #ifdef PAM_FOUND
 	/*  PAM parametrs */
@@ -115,6 +127,10 @@ struct od_rule {
 	od_rule_pool_t *pool;
 	int catchup_timeout;
 	int catchup_checks;
+
+	/* group */
+	od_group_t *group; // set if rule is group
+	od_rule_t *group_rule;
 
 	/* PostgreSQL options */
 	kiwi_vars_t vars;
@@ -168,12 +184,16 @@ void od_rules_ref(od_rule_t *);
 void od_rules_unref(od_rule_t *);
 int od_rules_compare(od_rule_t *, od_rule_t *);
 
-od_rule_t *od_rules_forward(od_rules_t *, char *, char *, int);
+od_rule_t *od_rules_forward(od_rules_t *, char *, char *,
+			    struct sockaddr_storage *, int, int);
 
 /* search rule with desored characteristik */
 od_rule_t *od_rules_match(od_rules_t *rules, char *db_name, char *user_name,
-			  int db_is_default, int user_is_default,
-			  int pool_internal);
+			  od_address_range_t *address_range, int db_is_default,
+			  int user_is_default, int pool_internal);
+
+/* group */
+od_group_t *od_rules_group_allocate(od_global_t *global);
 
 void od_rules_rule_free(od_rule_t *rule);
 
@@ -198,5 +218,8 @@ od_rule_ldap_storage_credentials_add(od_rule_t *rule,
 od_rule_auth_t *od_rules_auth_add(od_rule_t *);
 
 void od_rules_auth_free(od_rule_auth_t *);
+
+od_retcode_t od_rules_groups_checkers_run(od_logger_t *logger,
+					  od_rules_t *rules);
 
 #endif /* ODYSSEY_RULES_H */

@@ -33,8 +33,6 @@ host   tsa_db          user_ro                       127.0.0.1/32 trust
 host   tsa_db          user_rw                       127.0.0.1/32 trust
 EOF
 
-sed -i 's/max_connections = 100/max_connections = 2000/g' /etc/postgresql/14/main/postgresql.conf
-
 
 rm -fr /var/lib/postgresql/14/main/
 rm -fr /var/lib/postgresql/14/repl
@@ -43,6 +41,7 @@ cp -r /etc/postgresql/14/main /etc/postgresql/14/repl
 
 # create primary
 sudo -u postgres /usr/lib/postgresql/14/bin/initdb -D /var/lib/postgresql/14/main/
+sed -i 's/max_connections = 100/max_connections = 2000/g' /var/lib/postgresql/14/main/postgresql.conf
 sudo -u postgres /usr/lib/postgresql/14/bin/pg_ctl -D /var/lib/postgresql/14/main/ start
 
 # create replica
@@ -50,7 +49,7 @@ sudo -u postgres /usr/bin/pg_basebackup -D /var/lib/postgresql/14/repl -R -h loc
 sudo -u postgres /usr/lib/postgresql/14/bin/pg_ctl -D /var/lib/postgresql/14/repl/ -o '-p 5433' start
 
 # Create databases
-for database_name in db scram_db ldap_db auth_query_db db1 hba_db tsa_db; do
+for database_name in db scram_db ldap_db auth_query_db db1 hba_db tsa_db group_db addr_db xproto_db "spqr-console"; do
     sudo -u postgres createdb $database_name >> "$SETUP_LOG" 2>&1 || {
         echo "ERROR: 'createdb $database_name' failed, examine the log"
         cat "$SETUP_LOG"
@@ -58,6 +57,19 @@ for database_name in db scram_db ldap_db auth_query_db db1 hba_db tsa_db; do
         exit 1
     }
 done
+
+# pgbench initialization
+mkdir /var/cores
+sudo sysctl -w kernel.core_pattern=/var/cores/core.%p.%e
+pgbench -i -h localhost -p 5432 -U postgres postgres
+
+# Create users
+psql -h localhost -p 5432 -U postgres -c "create role group1; create role group2; create user group_checker; create user group_user1; create user group_user2; create user group_user3; create user group_user4; create user group_user5; create user group_checker1; create user group_checker2;" -d group_db >> $SETUP_LOG 2>&1 || {
+    echo "ERROR: users creation failed, examine the log"
+    cat "$SETUP_LOG"
+    cat "$PG_LOG"
+    exit 1
+}
 
 # Create users
 psql -h localhost -p 5432 -U postgres -c "set password_encryption = 'scram-sha-256'; create user scram_user password 'scram_user_password';" -d scram_db >> $SETUP_LOG 2>&1 || {
@@ -123,6 +135,30 @@ psql -h localhost -p 5432 -U postgres  -c "create user user_allow password 'corr
   exit 1
 }
 
+# Create users
+psql -h localhost -p 5432 -U postgres  -c "create user user_addr_correct password 'correct_password'; create user user_addr_incorrect password 'correct_password'; create user user_addr_default password 'correct_password'; create user user_addr_empty password 'correct_password'; create user user_addr_hostname_localhost password 'correct_password';" >> $SETUP_LOG 2>&1 || {
+  echo "ERROR: users creation failed, examine the log"
+  cat "$SETUP_LOG"
+  cat "$PG_LOG"
+  exit 1
+}
+
+# Create users
+psql -h localhost -p 5432 -U postgres -c "create role xproto SUPERUSER LOGIN" -d xproto_db >> $SETUP_LOG 2>&1 || {
+    echo "ERROR: users creation failed, examine the log"
+    cat "$SETUP_LOG"
+    cat "$PG_LOG"
+    exit 1
+}
+
+# Create users
+psql -h localhost -p 5432 -U postgres  -c "create user \"spqr-console\";" >> $SETUP_LOG 2>&1 || {
+  echo "ERROR: users creation failed, examine the log"
+  cat "$SETUP_LOG"
+  cat "$PG_LOG"
+  exit 1
+}
+
 for i in `seq 0 9`
 do
 	# Create tables
@@ -133,6 +169,14 @@ do
 		exit 1
 	}
 done
+
+# Create tables
+psql -h localhost -p 5432 -U postgres -d db -c "CREATE TABLE copy_test(c1 VARCHAR(50), c2 VARCHAR(50), c3 VARCHAR(50))" >> $SETUP_LOG 2>&1 || {
+    echo "ERROR: tables creation failed, examine the log"
+    cat "$SETUP_LOG"
+    cat "$PG_LOG"
+    exit 1
+}
 
 # Create databases for ldap_storage_credentials
 for database_name in ldap_db1 ldap_db2; do

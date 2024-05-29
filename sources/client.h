@@ -43,6 +43,8 @@ struct od_client {
 	uint64_t time_setup;
 	uint64_t time_last_active;
 
+	bool is_watchdog;
+
 	kiwi_be_startup_t startup;
 	kiwi_vars_t vars;
 	kiwi_key_t key;
@@ -52,7 +54,7 @@ struct od_client {
 	void *route;
 	char peer[OD_CLIENT_MAX_PEERLEN];
 
-	// desc preparet statements ids
+	/* desc preparet statements ids */
 	od_hashmap_t *prep_stmt_ids;
 
 	/* passwd from config rule */
@@ -72,6 +74,9 @@ struct od_client {
 	int ldap_storage_password_len;
 	char *ldap_auth_dn;
 #endif
+
+	/* external_id for logging additional ifno about client */
+	char *external_id;
 };
 
 static const size_t OD_CLIENT_DEFAULT_HASHMAP_SZ = 420;
@@ -108,6 +113,7 @@ static inline void od_client_init(od_client_t *client)
 	client->ldap_storage_password_len = 0;
 	client->ldap_auth_dn = NULL;
 #endif
+	client->external_id = NULL;
 
 	kiwi_be_startup_init(&client->startup);
 	kiwi_vars_init(&client->vars);
@@ -145,6 +151,9 @@ static inline void od_client_free(od_client_t *client)
 	kiwi_password_free(&client->received_password);
 	if (client->prep_stmt_ids) {
 		od_hashmap_free(client->prep_stmt_ids);
+	}
+	if (client->external_id) {
+		free(client->external_id);
 	}
 	free(client);
 }

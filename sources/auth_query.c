@@ -113,8 +113,8 @@ int od_auth_query(od_client_t *client, char *peer)
 	od_hash_t keyhash;
 	uint64_t current_time;
 
-	key.data = user->name;
-	key.len = user->name_len;
+	key.data = user->value;
+	key.len = user->value_len;
 
 	keyhash = od_murmur_hash(key.data, key.len);
 	/* acquire hash map entry lock */
@@ -122,26 +122,36 @@ int od_auth_query(od_client_t *client, char *peer)
 
 	if (value->data == NULL) {
 		/* one-time initialize */
-		value->data = malloc(sizeof(od_auth_cache_value_t));
 		value->len = sizeof(od_auth_cache_value_t);
+		value->data = malloc(value->len);
+		/* OOM */
+		if (value->data == NULL) {
+			goto error;
+		}
+		memset(((od_auth_cache_value_t *)(value->data)), 0, value->len);
 	}
 
 	cache_value = (od_auth_cache_value_t *)value->data;
 
 	current_time = machine_time_us();
 
-	if (cache_value != NULL
-	    /* password cached for 10 sec */
-	    && current_time - cache_value->timestamp < 10 * interval_usec) {
+	if (/* password cached for 10 sec */
+	    current_time - cache_value->timestamp < 10 * interval_usec) {
 		od_debug(&instance->logger, "auth_query", NULL, NULL,
 			 "reusing cached password for user %.*s",
-			 user->name_len, user->name);
+			 user->value_len, user->value);
 		/* unlock hashmap entry */
 		password->password_len = cache_value->passwd_len;
-		password->password = malloc(password->password_len + 1);
-		strncpy(password->password, cache_value->passwd,
-			cache_value->passwd_len);
-		password->password[password->password_len] = '\0';
+		if (cache_value->passwd_len > 0) {
+			/*  */
+			password->password = malloc(password->password_len + 1);
+			if (password->password == NULL) {
+				goto error;
+			}
+			strncpy(password->password, cache_value->passwd,
+				cache_value->passwd_len);
+			password->password[password->password_len] = '\0';
+		}
 		od_hashmap_unlock_key(storage->acache, keyhash, &key);
 		return OK_RESPONSE;
 	}
@@ -158,8 +168,8 @@ int od_auth_query(od_client_t *client, char *peer)
 	}
 
 	od_debug(&instance->logger, "auth_query", auth_client, NULL,
-		 "acquiring password for user %.*s", user->name_len,
-		 user->name);
+		 "acquiring password for user %.*s", user->value_len,
+		 user->value);
 
 	/* set auth query route user and database */
 	kiwi_var_set(&auth_client->startup.user, KIWI_VAR_UNDEF,
@@ -168,9 +178,17 @@ int od_auth_query(od_client_t *client, char *peer)
 	kiwi_var_set(&auth_client->startup.database, KIWI_VAR_UNDEF,
 		     rule->auth_query_db, strlen(rule->auth_query_db) + 1);
 
+	/* set io from client */
+	od_io_t auth_client_io = auth_client->io;
+	auth_client->io = client->io;
+
 	/* route */
 	od_router_status_t status;
 	status = od_router_route(router, auth_client);
+
+	/* return io auth_client back */
+	auth_client->io = auth_client_io;
+
 	if (status != OD_ROUTER_OK) {
 		od_debug(&instance->logger, "auth_query", auth_client, NULL,
 			 "failed to route internal auth query client: %s",
@@ -246,9 +264,15 @@ int od_auth_query(od_client_t *client, char *peer)
 	if (cache_value->passwd != NULL) {
 		/* drop previous value */
 		free(cache_value->passwd);
+
+		// there should be cache_value->passwd = NULL for sanity
+		// but this is meaninigless sinse we assing new value just below
 	}
 	cache_value->passwd_len = password->password_len;
 	cache_value->passwd = malloc(password->password_len);
+	if (cache_value->passwd == NULL) {
+		goto error;
+	}
 	strncpy(cache_value->passwd, password->password,
 		cache_value->passwd_len);
 

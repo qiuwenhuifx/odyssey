@@ -52,7 +52,10 @@
 #include "sources/pam.h"
 #endif
 
+#include "sources/address.h"
+
 #include "sources/storage.h"
+#include "sources/group.h"
 #include "sources/pool.h"
 #include "sources/rules.h"
 #include "sources/hba_rule.h"
@@ -149,4 +152,5 @@
 #include "sources/frontend.h"
 #include "sources/backend.h"
 
+#include "sources/mdb_iamproxy.h"
 #endif /* ODYSSEY_H */
