@@ -260,6 +260,10 @@ od_retcode_t od_ldap_server_prepare(od_logger_t *logger, od_ldap_server_t *serv,
 		ldap_memfree(dn);
 		ldap_msgfree(search_message);
 
+		if (auth_user == NULL) {
+			return NOT_OK_RESPONSE;
+		}
+
 	} else {
 		od_asprintf(&auth_user, "%s%s%s",
 			    serv->endpoint->ldapprefix ?
@@ -589,11 +593,11 @@ od_ldap_endpoint_t *od_ldap_endpoint_alloc()
 	// preparsed connect url
 	le->ldapurl = NULL;
 
-	od_server_pool_t *ldap_auth_pool = malloc(sizeof(*ldap_auth_pool));
+	od_server_pool_t *ldap_auth_pool = malloc(sizeof(od_server_pool_t));
 	od_server_pool_init(ldap_auth_pool);
 	le->ldap_auth_pool = ldap_auth_pool;
 
-	od_server_pool_t *ldap_search_pool = malloc(sizeof(*ldap_search_pool));
+	od_server_pool_t *ldap_search_pool = malloc(sizeof(od_server_pool_t));
 	od_server_pool_init(ldap_search_pool);
 	le->ldap_search_pool = ldap_search_pool;
 

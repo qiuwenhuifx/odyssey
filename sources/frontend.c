@@ -1425,8 +1425,8 @@ static inline od_frontend_status_t od_frontend_poll_catchup(od_client_t *client,
 	while (route->last_heartbeat == 0) {
 		machine_sleep(ODYSSEY_CATCHUP_RECHECK_INTERVAL);
 		if ((int64_t)absent_heartbeat_checks++ > // add cast to int64_t for correct camparison (int64_t > int and ibt64_t > uint32_t)
-		    (int64_t)(timeout * 1000 /
-			      ODYSSEY_CATCHUP_RECHECK_INTERVAL)) {
+		    (timeout * (int64_t)1000 /
+		     ODYSSEY_CATCHUP_RECHECK_INTERVAL)) {
 			od_debug(&instance->logger, "catchup", client, NULL,
 				 "No heartbeat for route detected\n");
 			return OD_ECATCHUP_TIMEOUT;
@@ -1674,7 +1674,7 @@ static od_frontend_status_t od_frontend_remote(od_client_t *client)
 				 server, "process, %d",
 				 od_server_synchronized(server));
 
-			while (1) {
+			for (;;) {
 				if (od_server_synchronized(server)) {
 					break;
 				}
@@ -1725,7 +1725,7 @@ static od_frontend_status_t od_frontend_remote(od_client_t *client)
 			server->sync_point = 1;
 			od_server_sync_request(server, 1);
 
-			while (1) {
+			for (;;) {
 				if (od_server_synchronized(server)) {
 					break;
 				}

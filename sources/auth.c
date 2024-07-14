@@ -28,7 +28,7 @@ static inline int od_auth_frontend_cleartext(od_client_t *client)
 	}
 
 	/* wait for password response */
-	while (1) {
+	for (;;) {
 		msg = od_read(&client->io, UINT32_MAX);
 		if (msg == NULL) {
 			od_error(&instance->logger, "auth", client, NULL,
@@ -211,7 +211,7 @@ static inline int od_auth_frontend_md5(od_client_t *client)
 	}
 
 	/* wait for password response */
-	while (1) {
+	for (;;) {
 		msg = od_read(&client->io, UINT32_MAX);
 		if (msg == NULL) {
 			od_error(&instance->logger, "auth", client, NULL,
@@ -370,7 +370,7 @@ static inline int od_auth_frontend_scram_sha_256(od_client_t *client)
 	}
 
 	/* wait for SASLInitialResponse */
-	while (1) {
+	for (;;) {
 		msg = od_read(&client->io, UINT32_MAX);
 		if (msg == NULL) {
 			od_error(&instance->logger, "auth", client, NULL,
@@ -522,7 +522,7 @@ static inline int od_auth_frontend_scram_sha_256(od_client_t *client)
 	}
 
 	/* wait for SASLResponse */
-	while (1) {
+	for (;;) {
 		// TODO: here's infinite wait, need to replace it with
 		// client_login_timeout
 		msg = od_read(&client->io, UINT32_MAX);
@@ -583,10 +583,12 @@ static inline int od_auth_frontend_scram_sha_256(od_client_t *client)
 			"frontend auth: malformed client SASLResponse: nonce doesn't match");
 
 		machine_msg_free(msg);
+		free(client_proof);
 		return -1;
 	}
 
 	rc = od_scram_verify_client_proof(&scram_state, client_proof);
+	free(client_proof);
 	if (rc == -1) {
 		od_frontend_error(
 			client, KIWI_INVALID_AUTHORIZATION_SPECIFICATION,
@@ -614,6 +616,7 @@ static inline int od_auth_frontend_scram_sha_256(od_client_t *client)
 		return -1;
 	}
 
+	od_scram_state_free(&scram_state);
 	return 0;
 }
 
@@ -1093,7 +1096,7 @@ int od_auth_backend(od_server_t *server, machine_msg_t *msg,
 	}
 
 	/* wait for authentication response */
-	while (1) {
+	for (;;) {
 		msg = od_read(&server->io, UINT32_MAX);
 		if (msg == NULL) {
 			od_error(&instance->logger, "auth", NULL, server,
