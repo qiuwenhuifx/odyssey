@@ -201,6 +201,10 @@ od_frontend_attach(od_client_t *client, char *context,
 	od_router_t *router = client->global->router;
 	od_route_t *route = client->route;
 
+	if (route->rule->pool->reserve_prepared_statement) {
+		client->relay.require_full_prep_stmt = 1;
+	}
+
 	bool wait_for_idle = false;
 	for (;;) {
 		od_router_status_t status;
@@ -230,6 +234,8 @@ od_frontend_attach(od_client_t *client, char *context,
 			 (int)sizeof(server->id.id_prefix), server->id.id);
 
 		assert(od_server_synchronized(server));
+		assert(server->relay.iov == 0 ||
+		       !machine_iov_pending(server->relay.iov));
 
 		/* connect to server, if necessary */
 		if (server->io.io) {
@@ -431,8 +437,14 @@ static inline od_frontend_status_t od_frontend_local_setup(od_client_t *client)
 		goto error;
 	/* client parameters */
 	machine_msg_t *msg;
-	msg = kiwi_be_write_parameter_status(stream, "server_version", 15,
-					     "9.6.0", 6);
+	char data[128];
+	int data_len;
+	/* current version and build */
+	data_len =
+		od_snprintf(data, sizeof(data), "%s-%s-%s", OD_VERSION_NUMBER,
+			    OD_VERSION_GIT, OD_VERSION_BUILD);
+	msg = kiwi_be_write_parameter_status(stream, "server_version", 15, data,
+					     data_len + 1);
 	if (msg == NULL)
 		goto error;
 	msg = kiwi_be_write_parameter_status(stream, "server_encoding", 16,
@@ -1274,6 +1286,19 @@ static od_frontend_status_t od_frontend_remote_client(od_relay_t *relay,
 
 			od_hash_t body_hash =
 				od_murmur_hash(desc->data, desc->len);
+
+			int invalidate = 0;
+
+			if (desc->len >= 7) {
+				if (strncmp(desc->data, "DISCARD", 7) == 0) {
+					od_debug(
+						&instance->logger,
+						"rewrite bind", client, server,
+						"discard detected, invalidate caches");
+					invalidate = 1;
+				}
+			}
+
 			char opname[OD_HASH_LEN];
 			od_snprintf(opname, OD_HASH_LEN, "%08x", body_hash);
 
@@ -1292,6 +1317,10 @@ static od_frontend_status_t od_frontend_remote_client(od_relay_t *relay,
 			}
 
 			machine_msg_t *msg;
+			if (invalidate) {
+				od_hashmap_empty(server->prep_stmts);
+			}
+
 			msg = od_frontend_rewrite_msg(data, size,
 						      opname_start_offset,
 						      operator_name_len, opname,
@@ -1617,21 +1646,20 @@ static od_frontend_status_t od_frontend_remote(od_client_t *client)
 		if (status != OD_OK)
 			break;
 
+		/* Check for replication lag and reject query if too big */
+		od_frontend_status_t catchup_status =
+			od_frontend_check_replica_catchup(instance, client);
+		if (od_frontend_status_is_err(catchup_status)) {
+			status = catchup_status;
+			break;
+		}
+
 		server = client->server;
 		bool sync_req = 0;
 
 		/* attach */
 		status = od_relay_step(&client->relay, false);
 		if (status == OD_ATTACH) {
-			/* Check for replication lag and reject query if too big */
-			od_frontend_status_t catchup_status =
-				od_frontend_check_replica_catchup(instance,
-								  client);
-			if (od_frontend_status_is_err(catchup_status)) {
-				status = catchup_status;
-				break;
-			}
-
 			assert(server == NULL);
 			status = od_frontend_attach_and_deploy(client, "main");
 			if (status != OD_OK)

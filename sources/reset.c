@@ -179,6 +179,10 @@ int od_reset(od_server_t *server)
 			goto error;
 	}
 
+	if (machine_iov_pending(server->relay.iov)) {
+		goto error;
+	}
+
 	/* ready */
 	return 1;
 drop:
