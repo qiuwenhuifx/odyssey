@@ -5,10 +5,21 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <kiwi.h>
-#include <machinarium.h>
 #include <odyssey.h>
+
+#include <machinarium/machinarium.h>
+
+#include <worker.h>
+#include <global.h>
+#include <thread_global.h>
+#include <client.h>
+#include <instance.h>
+#include <msg.h>
+#include <frontend.h>
+#include <router.h>
+
 #ifdef PROM_FOUND
+#include <cron.h>
 #include <prom_metric.h>
 #endif
 
@@ -18,12 +29,12 @@ static inline void od_worker(void *arg)
 	od_instance_t *instance = worker->global->instance;
 	od_router_t *router = worker->global->router;
 
-	/* thread global initializtion */
+	/* thread global initialization */
 	od_thread_global **gl = od_thread_global_get();
 	od_retcode_t rc = od_thread_global_init(gl);
 
 	if (rc != OK_RESPONSE) {
-		// TODO: set errno
+		/* TODO: set errno */
 		od_fatal(&instance->logger, "worker_init", NULL, NULL,
 			 "failed to init worker thread info");
 		return;
@@ -31,13 +42,19 @@ static inline void od_worker(void *arg)
 
 	(*gl)->wid = worker->id;
 
-	for (;;) {
+	bool run = true;
+
+	while (run) {
+		uint32_t task_wait_timout_ms = 10 * 1000;
+
 		machine_msg_t *msg;
 		/* Inverse priorities of cliend routing to decrease chances of timeout */
 		msg = machine_channel_read_back(worker->task_channel,
-						UINT32_MAX);
-		if (msg == NULL)
-			break;
+						task_wait_timout_ms);
+		if (msg == NULL) {
+			/* no tasks within timeout, this is not an error */
+			continue;
+		}
 
 		od_msg_t msg_type;
 		msg_type = machine_msg_type(msg);
@@ -47,9 +64,14 @@ static inline void od_worker(void *arg)
 			client = *(od_client_t **)machine_msg_data(msg);
 			client->global = worker->global;
 
+			/* for NULL-terminator and prefix, just in case */
+			char coro_name[10 + OD_ID_LEN];
+			od_id_write_to_string(&client->id, coro_name,
+					      10 + OD_ID_LEN);
+
 			int64_t coroutine_id;
-			coroutine_id =
-				machine_coroutine_create(od_frontend, client);
+			coroutine_id = machine_coroutine_create_named(
+				od_frontend, client, coro_name);
 			if (coroutine_id == -1) {
 				od_error(&instance->logger, "worker", client,
 					 NULL, "failed to create coroutine");
@@ -93,6 +115,12 @@ static inline void od_worker(void *arg)
 			       worker->clients_processed);
 			break;
 		}
+		case OD_MSG_SHUTDOWN:
+			od_log(&instance->logger, "worker", NULL, NULL,
+			       "worker[%d]: shutdown message received",
+			       worker->id);
+			run = false;
+			break;
 		default:
 			assert(0);
 			break;
@@ -103,7 +131,8 @@ static inline void od_worker(void *arg)
 
 	od_thread_global_free(*gl);
 
-	od_log(&instance->logger, "worker", NULL, NULL, "stopped");
+	od_log(&instance->logger, "worker", NULL, NULL, "worker[%d] stopped",
+	       worker->id);
 }
 
 void od_worker_init(od_worker_t *worker, od_global_t *global, int id)
@@ -136,4 +165,12 @@ int od_worker_start(od_worker_t *worker)
 	}
 
 	return 0;
+}
+
+void od_worker_shutdown(od_worker_t *worker)
+{
+	machine_msg_t *msg;
+	msg = machine_msg_create(0);
+	machine_msg_set_type(msg, OD_MSG_SHUTDOWN);
+	machine_channel_write(worker->task_channel, msg);
 }

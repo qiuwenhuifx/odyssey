@@ -1,6 +1,9 @@
-
-#include <machinarium.h>
 #include <odyssey.h>
+
+#include <machinarium/machinarium.h>
+
+#include <setproctitle.h>
+#include <util.h>
 
 od_retcode_t od_setproctitlef(char **argv_ptr, char *fmt, ...)
 {

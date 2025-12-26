@@ -5,10 +5,29 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <kiwi.h>
-#include <machinarium.h>
-#include <channel_limit.h>
 #include <odyssey.h>
+
+#include <syslog.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/time.h>
+
+#include <machinarium/machinarium.h>
+#include <machinarium/channel_limit.h>
+
+#include <logger.h>
+#include <client.h>
+#include <dns.h>
+#include <server.h>
+#include <route.h>
+#include <rules.h>
+#include <msg.h>
+#include <global.h>
+#include <util.h>
+
+#ifdef HAVE_CJSON
+#include <cjson/cJSON.h>
+#endif
 
 typedef struct {
 	char *name;
@@ -41,6 +60,7 @@ od_retcode_t od_logger_init(od_logger_t *logger, od_pid_t *pid)
 	logger->log_syslog = 0;
 	logger->format = NULL;
 	logger->format_len = 0;
+	logger->format_type = OD_LOGGER_FORMAT_TEXT;
 	logger->fd = -1;
 	logger->loaded = 0;
 
@@ -56,7 +76,7 @@ static inline void od_logger(void *arg);
 
 od_retcode_t od_logger_load(od_logger_t *logger)
 {
-	// we should do this in separate function, after config read and machinauim initialization
+	/* we should do this in separate function, after config read and machinauim initialization */
 	logger->task_channel = machine_channel_create();
 	if (logger->task_channel == NULL) {
 		return NOT_OK_RESPONSE;
@@ -81,9 +101,10 @@ od_retcode_t od_logger_load(od_logger_t *logger)
 
 int od_logger_open(od_logger_t *logger, char *path)
 {
-	logger->fd = open(path, O_RDWR | O_CREAT | O_APPEND, 0644);
-	if (logger->fd == -1)
+	logger->fd = open(path, O_RDWR | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+	if (logger->fd == -1) {
 		return -1;
+	}
 	return 0;
 }
 
@@ -91,10 +112,11 @@ int od_logger_reopen(od_logger_t *logger, char *path)
 {
 	int old_fd = logger->fd;
 	int rc = od_logger_open(logger, path);
-	if (rc == -1)
+	if (rc == -1) {
 		logger->fd = old_fd;
-	else if (old_fd != -1)
+	} else if (old_fd != -1) {
 		close(old_fd);
+	}
 	return rc;
 }
 
@@ -106,8 +128,9 @@ int od_logger_open_syslog(od_logger_t *logger, char *ident, char *facility)
 		od_log_syslog_facility_t *facility_ptr;
 		for (;;) {
 			facility_ptr = &od_log_syslog_facilities[i];
-			if (facility_ptr->name == NULL)
+			if (facility_ptr->name == NULL) {
 				break;
+			}
 			if (strcasecmp(facility_ptr->name, facility) == 0) {
 				facility_id = facility_ptr->id;
 				break;
@@ -116,16 +139,18 @@ int od_logger_open_syslog(od_logger_t *logger, char *ident, char *facility)
 		}
 	}
 	logger->log_syslog = 1;
-	if (ident == NULL)
+	if (ident == NULL) {
 		ident = "odyssey";
+	}
 	openlog(ident, 0, facility_id);
 	return 0;
 }
 
 void od_logger_close(od_logger_t *logger)
 {
-	if (logger->fd != -1)
+	if (logger->fd != -1) {
 		close(logger->fd);
+	}
 	logger->fd = -1;
 }
 
@@ -150,14 +175,16 @@ __attribute__((hot)) static inline int od_logger_escape(char *dest, int size,
 		char escaped_char;
 		escaped_char = od_logger_escape_tab[(int)*msg_pos];
 		if (od_unlikely(escaped_char)) {
-			if (od_unlikely((dst_end - dst_pos) < 2))
+			if (od_unlikely((dst_end - dst_pos) < 2)) {
 				break;
+			}
 			dst_pos[0] = '\\';
 			dst_pos[1] = escaped_char;
 			dst_pos += 2;
 		} else {
-			if (od_unlikely((dst_end - dst_pos) < 1))
+			if (od_unlikely((dst_end - dst_pos) < 1)) {
 				break;
+			}
 			dst_pos[0] = *msg_pos;
 			dst_pos += 1;
 		}
@@ -181,10 +208,12 @@ od_logger_format(od_logger_t *logger, od_logger_level_t level, char *context,
 	while (format_pos < format_end) {
 		if (*format_pos == '\\') {
 			format_pos++;
-			if (od_unlikely(format_pos == format_end))
+			if (od_unlikely(format_pos == format_end)) {
 				break;
-			if (od_unlikely((dst_end - dst_pos) < 1))
+			}
+			if (od_unlikely((dst_end - dst_pos) < 1)) {
 				break;
+			}
 			switch (*format_pos) {
 			case '\\':
 				dst_pos[0] = '\\';
@@ -203,8 +232,9 @@ od_logger_format(od_logger_t *logger, od_logger_level_t level, char *context,
 				dst_pos += 1;
 				break;
 			default:
-				if (od_unlikely((dst_end - dst_pos) < 2))
+				if (od_unlikely((dst_end - dst_pos) < 2)) {
 					break;
+				}
 				dst_pos[0] = '\\';
 				dst_pos[1] = *format_pos;
 				dst_pos += 2;
@@ -212,8 +242,9 @@ od_logger_format(od_logger_t *logger, od_logger_level_t level, char *context,
 			}
 		} else if (*format_pos == '%') {
 			format_pos++;
-			if (od_unlikely(format_pos == format_end))
+			if (od_unlikely(format_pos == format_end)) {
 				break;
+			}
 			switch (*format_pos) {
 			/* external_id */
 			case 'x': {
@@ -226,7 +257,7 @@ od_logger_format(od_logger_t *logger, od_logger_level_t level, char *context,
 					break;
 				}
 
-				// fall throught fix (if client is not defined will write 'none' to log file)
+				/* fall through fix (if client is not defined will write 'none' to log file) */
 				len = od_snprintf(dst_pos, dst_end - dst_pos,
 						  "none");
 				dst_pos += len;
@@ -244,8 +275,10 @@ od_logger_format(od_logger_t *logger, od_logger_level_t level, char *context,
 			case 't': {
 				struct timeval tv;
 				gettimeofday(&tv, NULL);
+				struct tm tm;
 				len = strftime(dst_pos, dst_end - dst_pos,
-					       "%FT%TZ", gmtime(&tv.tv_sec));
+					       "%FT%TZ",
+					       gmtime_r(&tv.tv_sec, &tm));
 				dst_pos += len;
 
 				break;
@@ -395,22 +428,25 @@ od_logger_format(od_logger_t *logger, od_logger_level_t level, char *context,
 				dst_pos += len;
 				break;
 			case '%':
-				if (od_unlikely((dst_end - dst_pos) < 1))
+				if (od_unlikely((dst_end - dst_pos) < 1)) {
 					break;
+				}
 				dst_pos[0] = '%';
 				dst_pos += 1;
 				break;
 			default:
-				if (od_unlikely((dst_end - dst_pos) < 2))
+				if (od_unlikely((dst_end - dst_pos) < 2)) {
 					break;
+				}
 				dst_pos[0] = '%';
 				dst_pos[1] = *format_pos;
 				dst_pos += 2;
 				break;
 			}
 		} else {
-			if (od_unlikely((dst_end - dst_pos) < 1))
+			if (od_unlikely((dst_end - dst_pos) < 1)) {
 				break;
+			}
 			dst_pos[0] = *format_pos;
 			dst_pos += 1;
 		}
@@ -446,15 +482,43 @@ static inline void _od_logger_write(od_logger_t *l, char *data, int len,
 	(void)rc;
 }
 
+static inline void log_machine_stats(od_logger_t *logger)
+{
+	uint64_t count_coroutine = 0;
+	uint64_t count_coroutine_cache = 0;
+	uint64_t msg_allocated = 0;
+	uint64_t msg_cache_count = 0;
+	uint64_t msg_cache_gc_count = 0;
+	uint64_t msg_cache_size = 0;
+	machine_stat(&count_coroutine, &count_coroutine_cache, &msg_allocated,
+		     &msg_cache_count, &msg_cache_gc_count, &msg_cache_size);
+
+	od_log(logger, "stats", NULL, NULL,
+	       "logger: msg (%" PRIu64 " allocated, %" PRIu64
+	       " cached, %" PRIu64 " freed, %" PRIu64 " cache_size), "
+	       "coroutines (%" PRIu64 " active, %" PRIu64 " cached)",
+	       msg_allocated, msg_cache_count, msg_cache_gc_count,
+	       msg_cache_size, count_coroutine, count_coroutine_cache);
+}
+
 static inline void od_logger(void *arg)
 {
 	od_logger_t *logger = arg;
 
-	for (;;) {
+	bool run = true;
+
+	while (run) {
+		uint32_t task_wait_timeout_ms = 10 * 1000;
+
 		machine_msg_t *msg;
-		msg = machine_channel_read(logger->task_channel, UINT32_MAX);
-		if (msg == NULL)
-			break;
+		msg = machine_channel_read(logger->task_channel,
+					   task_wait_timeout_ms);
+		if (msg == NULL) {
+			od_log(logger, "logger", NULL, NULL,
+			       "logger: no new messages for %u ms",
+			       task_wait_timeout_ms);
+			continue;
+		}
 
 		od_msg_t msg_type;
 		msg_type = machine_msg_type(msg);
@@ -465,6 +529,20 @@ static inline void od_logger(void *arg)
 
 			_od_logger_write(logger, le->msg, len, le->lvl);
 		} break;
+		case OD_MSG_STAT: {
+			log_machine_stats(logger);
+			break;
+		}
+		case OD_MSG_SHUTDOWN: {
+			/*
+			 * TODO: here we might loose some log message in channel
+			 * that follows shutdown message.
+			 * We will fix that after adding channel half-closing
+			 */
+			run = false;
+			logger->loaded = 0;
+			break;
+		}
 		default: {
 			assert(0);
 		} break;
@@ -474,12 +552,155 @@ static inline void od_logger(void *arg)
 	}
 }
 
+void od_logger_shutdown(od_logger_t *logger)
+{
+	/*
+	 * TODO: for now it is useless function, because there is no
+	 * logger closing waiting in graceful shutdown.
+	 * But after OD_MSG_SHUTDOWN handling will be fully fixed
+	 * there must be a waiting for the full task_channel flushing in the od_logger
+	 */
+
+	if (!logger->loaded) {
+		return;
+	}
+
+	machine_msg_t *msg;
+	msg = machine_msg_create(0);
+	machine_msg_set_type(msg, OD_MSG_SHUTDOWN);
+	machine_channel_write(logger->task_channel, msg);
+}
+
+void od_logger_wait_finish(od_logger_t *logger)
+{
+	if (machine_wait(logger->machine)) {
+		abort();
+	}
+	machine_channel_free(logger->task_channel);
+}
+
+#ifdef HAVE_CJSON
+static int od_logger_format_json(od_logger_t *logger, od_logger_level_t level,
+				 char *context, void *client_ptr,
+				 void *server_ptr, char *fmt, va_list args,
+				 char *output, int output_len)
+{
+	od_client_t *client = client_ptr;
+	od_server_t *server = server_ptr;
+
+	cJSON *root = cJSON_CreateObject();
+	if (!root) {
+		return 0;
+	}
+
+	/* timestamp */
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	struct tm tm;
+	char timestamp[64];
+	strftime(timestamp, sizeof(timestamp), "%FT%TZ",
+		 gmtime_r(&tv.tv_sec, &tm));
+	cJSON_AddStringToObject(root, "timestamp", timestamp);
+
+	/* pid */
+	cJSON_AddStringToObject(root, "pid", logger->pid->pid_sz);
+
+	/* level */
+	cJSON_AddStringToObject(root, "level", od_log_level[level]);
+
+	/* context */
+	cJSON_AddStringToObject(root, "context", context);
+
+	/* message */
+	char message[4096];
+	vsnprintf(message, sizeof(message), fmt, args);
+	cJSON_AddStringToObject(root, "message", message);
+
+	/* client fields */
+	if (client) {
+		cJSON *client_obj = cJSON_CreateObject();
+
+		if (client->id.id_prefix) {
+			char client_id[128];
+			snprintf(client_id, sizeof(client_id), "%s%.*s",
+				 client->id.id_prefix,
+				 (int)sizeof(client->id.id), client->id.id);
+			cJSON_AddStringToObject(client_obj, "id", client_id);
+		}
+
+		if (client->io.io) {
+			char peer[128];
+			od_getpeername(client->io.io, peer, sizeof(peer), 1, 0);
+			cJSON_AddStringToObject(client_obj, "ip", peer);
+
+			od_getpeername(client->io.io, peer, sizeof(peer), 0, 1);
+			cJSON_AddStringToObject(client_obj, "port", peer);
+		}
+
+		if (client->startup.user.value_len) {
+			cJSON_AddStringToObject(client_obj, "user",
+						client->startup.user.value);
+		}
+
+		if (client->startup.database.value_len) {
+			cJSON_AddStringToObject(client_obj, "database",
+						client->startup.database.value);
+		}
+
+		if (client->external_id) {
+			cJSON_AddStringToObject(client_obj, "external_id",
+						client->external_id);
+		}
+
+		if (client->route && client->route->rule &&
+		    client->route->rule->storage) {
+			cJSON_AddStringToObject(
+				client_obj, "server_host",
+				client->route->rule->storage->host);
+		}
+
+		cJSON_AddItemToObject(root, "client", client_obj);
+	}
+
+	/* server fields */
+	if (server) {
+		cJSON *server_obj = cJSON_CreateObject();
+
+		if (server->id.id_prefix) {
+			char server_id[128];
+			snprintf(server_id, sizeof(server_id), "%s%.*s",
+				 server->id.id_prefix,
+				 (int)sizeof(server->id.id), server->id.id);
+			cJSON_AddStringToObject(server_obj, "id", server_id);
+		}
+
+		cJSON_AddItemToObject(root, "server", server_obj);
+	}
+
+	/* Convert to string */
+	char *json_str = cJSON_PrintUnformatted(root);
+	int len = 0;
+	if (json_str) {
+		len = snprintf(output, output_len, "%s\n", json_str);
+		cJSON_free(json_str);
+	}
+	cJSON_Delete(root);
+
+	return len;
+}
+#endif /* HAVE_CJSON */
+
 void od_logger_write(od_logger_t *logger, od_logger_level_t level,
 		     char *context, void *client, void *server, char *fmt,
 		     va_list args)
 {
-	if (logger->fd == -1 && !logger->log_stdout && !logger->log_syslog)
+	if (logger == OD_LOGGER_GLOBAL) {
+		logger = od_global_get_logger();
+	}
+
+	if (logger->fd == -1 && !logger->log_stdout && !logger->log_syslog) {
 		return;
+	}
 
 	if (level == OD_DEBUG) {
 		int is_debug = logger->log_debug;
@@ -493,15 +714,28 @@ void od_logger_write(od_logger_t *logger, od_logger_level_t level,
 				is_debug = route->rule->log_debug;
 			}
 		}
-		if (!is_debug)
+		if (!is_debug) {
 			return;
+		}
 	}
 
 	char output[OD_LOGLINE_MAXLEN];
 	int len;
-	len = od_logger_format(logger, level, context, client, server, fmt,
-			       args, output, sizeof(output));
-	if (logger->loaded && false) {
+
+	/* Choose formatter based on format type */
+#ifdef HAVE_CJSON
+	if (logger->format_type == OD_LOGGER_FORMAT_JSON) {
+		len = od_logger_format_json(logger, level, context, client,
+					    server, fmt, args, output,
+					    sizeof(output));
+	} else
+#endif
+	{
+		len = od_logger_format(logger, level, context, client, server,
+				       fmt, args, output, sizeof(output));
+	}
+
+	if (logger->loaded) {
 		/* create new log event and pass it to logger pool */
 		machine_msg_t *msg;
 		msg = machine_msg_create(od_log_entry_req_size(len));
@@ -510,6 +744,7 @@ void od_logger_write(od_logger_t *logger, od_logger_level_t level,
 		_od_log_entry *le = machine_msg_data(msg);
 		strncpy(le->msg, output, len);
 		le->msg[len] = '\0';
+		le->lvl = level;
 
 		machine_channel_write(logger->task_channel, msg);
 	} else {
@@ -521,8 +756,9 @@ extern void od_logger_write_plain(od_logger_t *logger, od_logger_level_t level,
 				  char *context, void *client, void *server,
 				  char *string)
 {
-	if (logger->fd == -1 && !logger->log_stdout && !logger->log_syslog)
+	if (logger->fd == -1 && !logger->log_stdout && !logger->log_syslog) {
 		return;
+	}
 
 	if (level == OD_DEBUG) {
 		int is_debug = logger->log_debug;
@@ -536,13 +772,14 @@ extern void od_logger_write_plain(od_logger_t *logger, od_logger_level_t level,
 				is_debug = route->rule->log_debug;
 			}
 		}
-		if (!is_debug)
+		if (!is_debug) {
 			return;
+		}
 	}
 
 	int len = strlen(string);
 	char output[len + OD_LOGLINE_MAXLEN];
-	va_list empty_va_list;
+	va_list empty_va_list = { 0 };
 	len = od_logger_format(logger, level, context, client, server, string,
 			       empty_va_list, output, len + 100);
 
@@ -555,6 +792,7 @@ extern void od_logger_write_plain(od_logger_t *logger, od_logger_level_t level,
 		_od_log_entry *le = machine_msg_data(msg);
 		strncpy(le->msg, output, len);
 		le->msg[len] = '\0';
+		le->lvl = level;
 
 		machine_channel_write(logger->task_channel, msg);
 	} else {

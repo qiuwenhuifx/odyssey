@@ -1,36 +1,72 @@
-//
-// Created by ein-krebs on 8/12/21.
-//
+/*
+ * Odyssey.
+ *
+ * Scalable PostgreSQL connection pooler.
+ */
 
+#include <odyssey.h>
+
+#include <arpa/inet.h>
+
+#include <build.h>
+
+#include <od_memory.h>
 #include <prom_metrics.h>
 #include <prom.h>
-#include <assert.h>
-#include <odyssey.h>
-#include <stdio.h>
 
 #ifdef PROMHTTP_FOUND
 #include <promhttp.h>
 
+#if MHD_VERSION >= 0x00097002
+enum MHD_Result
+od_prom_AcceptPolicyCallback(__attribute__((unused)) void *cls,
+			     __attribute__((unused))
+			     const struct sockaddr *addr,
+			     __attribute__((unused)) socklen_t addrlen)
+#else
 int od_prom_AcceptPolicyCallback(void *cls, const struct sockaddr *addr,
 				 socklen_t addrlen)
+#endif
 {
 	return MHD_YES;
 }
 
+static bool system_supports_ipv6()
+{
+	int sock = socket(AF_INET6, SOCK_STREAM, 0);
+	if (sock < 0) {
+		return false; /* cannot create IPv6 socket */
+	}
+
+	struct sockaddr_in6 addr = { 0 };
+	addr.sin6_family = AF_INET6;
+	addr.sin6_addr = in6addr_loopback;
+	addr.sin6_port = htons(0); /* Let OS choose port */
+
+	int result = bind(sock, (struct sockaddr *)&addr, sizeof(addr));
+	close(sock);
+	return result == 0;
+}
+
 int od_prom_switch_server_on(od_prom_metrics_t *self)
 {
-	if (self->http_server)
-		return NOT_OK_RESPONSE;
+	int flags = MHD_USE_AUTO_INTERNAL_THREAD;
+
+	if (system_supports_ipv6()) {
+		flags |= MHD_USE_DUAL_STACK;
+	}
+
 	self->http_server = promhttp_start_daemon(
-		MHD_USE_DUAL_STACK | MHD_USE_AUTO_INTERNAL_THREAD, self->port,
-		od_prom_AcceptPolicyCallback, NULL);
+		flags, self->port, od_prom_AcceptPolicyCallback, NULL);
+
 	return self->http_server ? OK_RESPONSE : NOT_OK_RESPONSE;
 }
 
 int od_prom_set_port(int port, od_prom_metrics_t *self)
 {
-	if (!self)
+	if (!self) {
 		return NOT_OK_RESPONSE;
+	}
 	if (port > 0 && !self->http_server) {
 		self->port = port;
 	} else {
@@ -41,8 +77,9 @@ int od_prom_set_port(int port, od_prom_metrics_t *self)
 
 int od_prom_activate_general_metrics(od_prom_metrics_t *self)
 {
-	if (!self)
+	if (!self) {
 		return NOT_OK_RESPONSE;
+	}
 	promhttp_set_active_collector_registry(self->stat_general_metrics);
 	if (!self->http_server && self->port > 0) {
 		return od_prom_switch_server_on(self);
@@ -54,8 +91,9 @@ int od_prom_activate_general_metrics(od_prom_metrics_t *self)
 
 int od_prom_activate_route_metrics(od_prom_metrics_t *self)
 {
-	if (!self)
+	if (!self) {
 		return NOT_OK_RESPONSE;
+	}
 	promhttp_set_active_collector_registry(NULL);
 	if (!self->http_server && self->port > 0) {
 		return od_prom_switch_server_on(self);
@@ -68,8 +106,9 @@ int od_prom_activate_route_metrics(od_prom_metrics_t *self)
 
 int od_prom_metrics_init(struct od_prom_metrics *self)
 {
-	if (self == NULL)
+	if (self == NULL) {
 		return 0;
+	}
 
 	self->stat_general_metrics =
 		prom_collector_registry_new("stat_general_metrics");
@@ -77,8 +116,9 @@ int od_prom_metrics_init(struct od_prom_metrics *self)
 		prom_collector_new("stat_general_metrics_collector");
 	int err = prom_collector_registry_register_collector(
 		self->stat_general_metrics, stat_general_metrics_collector);
-	if (err)
+	if (err) {
 		return err;
+	}
 	self->database_len = prom_gauge_new("database_len",
 					    "Total databases count", 0, NULL);
 	prom_collector_add_metric(stat_general_metrics_collector,
@@ -100,8 +140,9 @@ int od_prom_metrics_init(struct od_prom_metrics *self)
 		prom_collector_new("stat_metrics_collector");
 	err = prom_collector_registry_register_collector(
 		self->stat_general_metrics, stat_worker_metrics_collector);
-	if (err)
+	if (err) {
 		return err;
+	}
 	const char *worker_label[1] = { "worker" };
 	self->msg_allocated = prom_gauge_new(
 		"msg_allocated", "Messages allocated", 1, worker_label);
@@ -139,8 +180,9 @@ int od_prom_metrics_init(struct od_prom_metrics *self)
 		prom_collector_new("stat_database_metrics_collector");
 	err = prom_collector_registry_register_collector(
 		self->stat_route_metrics, stat_database_metrics_collector);
-	if (err)
+	if (err) {
 		return err;
+	}
 	const char *database_labels[1] = { "database" };
 	self->client_pool_total = prom_gauge_new("client_pool_total",
 						 "Total database clients count",
@@ -152,8 +194,9 @@ int od_prom_metrics_init(struct od_prom_metrics *self)
 		prom_collector_new("stat_user_metrics_collector");
 	err = prom_collector_registry_register_collector(
 		self->stat_route_metrics, stat_route_metrics_collector);
-	if (err)
+	if (err) {
 		return err;
+	}
 	const char *user_labels[2] = { "user", "database" };
 	self->avg_tx_count =
 		prom_gauge_new("avg_tx_count",
@@ -206,34 +249,41 @@ int od_prom_metrics_write_stat(struct od_prom_metrics *self,
 			       u_int64_t count_coroutine,
 			       u_int64_t count_coroutine_cache)
 {
-	if (self == NULL)
+	if (self == NULL) {
 		return 1;
+	}
 	const char *labels[1] = { "general" };
 	int err;
 	err = prom_gauge_set(self->msg_allocated, (double)msg_allocated,
 			     labels);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->msg_cache_count, (double)msg_cache_count,
 			     labels);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->msg_cache_gc_count,
 			     (double)msg_cache_gc_count, labels);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->msg_cache_size, (double)msg_cache_size,
 			     labels);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->count_coroutine, (double)count_coroutine,
 			     labels);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->count_coroutine_cache,
 			     (double)count_coroutine_cache, labels);
-	if (err)
+	if (err) {
 		return err;
+	}
 	return 0;
 }
 
@@ -243,47 +293,56 @@ int od_prom_metrics_write_worker_stat(
 	u_int64_t msg_cache_size, u_int64_t count_coroutine,
 	u_int64_t count_coroutine_cache, u_int64_t clients_processed)
 {
-	if (self == NULL)
+	if (self == NULL) {
 		return 1;
+	}
 	char worker_label[12];
 	sprintf(worker_label, "worker[%d]", worker_id);
 	const char *labels[1] = { worker_label };
 	int err;
 	err = prom_gauge_set(self->msg_allocated, (double)msg_allocated,
 			     labels);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->msg_cache_count, (double)msg_cache_count,
 			     labels);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->msg_cache_gc_count,
 			     (double)msg_cache_gc_count, labels);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->msg_cache_size, (double)msg_cache_size,
 			     labels);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->count_coroutine, (double)count_coroutine,
 			     labels);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->count_coroutine_cache,
 			     (double)count_coroutine_cache, labels);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->clients_processed, (double)clients_processed,
 			     labels);
-	if (err)
+	if (err) {
 		return err;
+	}
 	return 0;
 }
 
 const char *od_prom_metrics_get_stat(od_prom_metrics_t *self)
 {
-	if (self == NULL)
+	if (self == NULL) {
 		return NULL;
+	}
 	return prom_collector_registry_bridge(self->stat_general_metrics);
 }
 
@@ -295,73 +354,87 @@ int od_prom_metrics_write_stat_cb(
 	u_int64_t avg_query_count, u_int64_t avg_query_time,
 	u_int64_t avg_recv_client, u_int64_t avg_recv_server)
 {
-	if (self == NULL)
+	if (self == NULL) {
 		return 1;
+	}
 	const char *database_label[1] = { database };
 	const char *user_database_label[2] = { user, database };
 	int err =
 		prom_gauge_set(self->database_len, (double)database_len, NULL);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->user_len, (double)user_len, NULL);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->client_pool_total, (double)client_pool_total,
 			     database_label);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->server_pool_active,
 			     (double)server_pool_active, NULL);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->server_pool_idle, (double)server_pool_idle,
 			     NULL);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->avg_tx_count, (double)avg_tx_count,
 			     user_database_label);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->avg_tx_time, (double)avg_tx_time,
 			     user_database_label);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->avg_query_count, (double)avg_query_count,
 			     user_database_label);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->avg_query_time, (double)avg_query_time,
 			     user_database_label);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->avg_recv_server, (double)avg_recv_server,
 			     user_database_label);
-	if (err)
+	if (err) {
 		return err;
+	}
 	err = prom_gauge_set(self->avg_recv_client, (double)avg_recv_client,
 			     user_database_label);
-	if (err)
+	if (err) {
 		return err;
+	}
 	return 0;
 }
 
 extern const char *od_prom_metrics_get_stat_cb(od_prom_metrics_t *self)
 {
-	if (self == NULL)
+	if (self == NULL) {
 		return NULL;
+	}
 	return prom_collector_registry_bridge(self->stat_route_metrics);
 }
 
 extern int od_prom_metrics_destroy(od_prom_metrics_t *self)
 {
-	if (self == NULL)
+	if (self == NULL) {
 		return 1;
+	}
 	prom_collector_registry_destroy(self->stat_general_metrics);
 	self->stat_general_metrics = NULL;
 
 	prom_collector_registry_destroy(self->stat_route_metrics);
 	self->stat_route_metrics = NULL;
 
-	free(self);
+	od_free(self);
 	return 0;
 }

@@ -1,2 +1,0 @@
-#!/bin/bash
-pkill odyssey || (sleep 1 && kill -9 $(pgrep odyssey)) || true

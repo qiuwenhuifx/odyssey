@@ -5,9 +5,24 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <kiwi.h>
-#include <machinarium.h>
 #include <odyssey.h>
+
+#include <machinarium/machinarium.h>
+
+#include <grac_shutdown_worker.h>
+#include <types.h>
+#include <system.h>
+#include <instance.h>
+#include <config.h>
+#include <sighandler.h>
+#include <setproctitle.h>
+#include <list.h>
+#include <hba.h>
+#include <router.h>
+#include <global.h>
+#include <msg.h>
+#include <worker_pool.h>
+#include <debugprintf.h>
 
 static inline int od_system_server_complete_stop(od_system_server_t *server)
 {
@@ -15,22 +30,60 @@ static inline int od_system_server_complete_stop(od_system_server_t *server)
 	int rc;
 	rc = machine_shutdown(server->io);
 
-	if (rc == -1)
+	if (rc == -1) {
 		return NOT_OK_RESPONSE;
+	}
 	return OK_RESPONSE;
+}
+
+static inline void od_grac_shutdown_timeout_killer(void *arg)
+{
+	od_instance_t *instance = arg;
+
+	machine_sleep(instance->config.graceful_shutdown_timeout_ms);
+
+	if (machine_errno() == ECANCELED) {
+		return;
+	}
+
+	od_error(&instance->logger, "grac-shutdown", NULL, NULL,
+		 "graceful shutdown timeout");
+
+	exit(1);
 }
 
 void od_grac_shutdown_worker(void *arg)
 {
+	od_grac_shutdown_worker_arg_t *warg = arg;
+
 	od_worker_pool_t *worker_pool;
 	od_system_t *system;
 	od_instance_t *instance;
 	od_router_t *router;
+	od_global_t *global;
+	machine_channel_t *channel;
 
-	system = arg;
+	system = warg->system;
+	global = system->global;
 	worker_pool = system->global->worker_pool;
 	instance = system->global->instance;
 	router = system->global->router;
+	channel = warg->channel;
+
+	od_free(warg);
+
+	int timeout_killer_id = INVALID_COROUTINE_ID;
+
+	if (instance->config.graceful_shutdown_timeout_ms != 0) {
+		timeout_killer_id = machine_coroutine_create_named(
+			od_grac_shutdown_timeout_killer, instance,
+			"grac_timeout");
+		if (timeout_killer_id == INVALID_COROUTINE_ID) {
+			od_error(&instance->logger, "grac-shutdown", NULL, NULL,
+				 "can't create timeout killer coroutine");
+			exit(1);
+		}
+	}
 
 	od_log(&instance->logger, "config", NULL, NULL,
 	       "stop to accepting new connections");
@@ -46,12 +99,18 @@ void od_grac_shutdown_worker(void *arg)
 	{
 		od_system_server_t *server;
 		server = od_container_of(i, od_system_server_t, link);
-		server->closed = true;
+		atomic_store(&server->closed, true);
+	}
+
+	od_soft_oom_stop_checker(&global->soft_oom);
+
+	if (instance->config.host_watcher_enabled) {
+		od_host_watcher_destroy(&global->host_watcher);
 	}
 
 	od_dbg_printf_on_dvl_lvl(1, "servers closed, errors: %d\n", 0);
 
-	/* wait for all servers to complete old transations */
+	/* wait for all servers to complete old transactions */
 	od_list_foreach(&router->servers, i)
 	{
 #if OD_DEVEL_LVL != OD_RELEASE_MODE
@@ -73,6 +132,10 @@ void od_grac_shutdown_worker(void *arg)
 					 server->sid.id);
 	}
 
+	/* let storage watchdog's finish */
+	od_rules_cleanup(&system->global->router->rules);
+
+	od_worker_pool_shutdown(worker_pool);
 	od_worker_pool_wait_gracefully_shutdown(worker_pool);
 
 	od_dbg_printf_on_dvl_lvl(1, "shutting down sockets %s\n", "");
@@ -85,10 +148,34 @@ void od_grac_shutdown_worker(void *arg)
 		od_system_server_complete_stop(server);
 	}
 
+	if (instance->config.hba_file != NULL) {
+		od_hba_free(global->hba);
+	}
+
 	machine_stop(system->machine);
 	od_dbg_printf_on_dvl_lvl(
 		1, "waiting done, sending sigint to own process %d\n",
 		instance->pid.pid);
-	/* start de-initialize process */
-	kill(instance->pid.pid, SIGTERM);
+
+	od_system_shutdown(system, instance);
+
+	if (timeout_killer_id != INVALID_COROUTINE_ID) {
+		int rc = machine_cancel(timeout_killer_id);
+		if (rc != 0) {
+			od_fatal(&instance->logger, "grac-shutdown", NULL, NULL,
+				 "failed to cancel timeout killer");
+		}
+	}
+
+	machine_msg_t *msg = machine_msg_create(0);
+	if (msg == NULL) {
+		od_fatal(&instance->logger, "system", NULL, NULL,
+			 "failed to create a message in grac_shutdown_worker");
+	}
+
+	od_system_free(system);
+	od_global_destroy(global);
+
+	machine_msg_set_type(msg, OD_MSG_GRAC_SHUTDOWN_FINISHED);
+	machine_channel_write(channel, msg);
 }

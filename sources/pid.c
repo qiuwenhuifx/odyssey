@@ -7,9 +7,17 @@
 
 #include <odyssey.h>
 
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <pid.h>
+#include <restart_sync.h>
+#include <util.h>
+
 void od_pid_init(od_pid_t *pid)
 {
 	pid->pid = getpid();
+	pid->restart_ppid = od_restart_get_ppid();
 	pid->pid_len = od_snprintf(pid->pid_sz, sizeof(pid->pid_sz), "%d",
 				   (int)pid->pid);
 }
@@ -20,8 +28,9 @@ int od_pid_create(od_pid_t *pid, char *path)
 	int size = od_snprintf(buffer, sizeof(buffer), "%d\n", pid->pid);
 	int rc;
 	rc = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-	if (rc == -1)
+	if (rc == -1) {
 		return -1;
+	}
 	int fd = rc;
 	rc = write(fd, buffer, size);
 	if (rc != size) {

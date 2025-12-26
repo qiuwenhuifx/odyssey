@@ -1,48 +1,61 @@
+# Welcome to Odyssey
+
+---
+
+## What is Odyssey
+
+
 <p align="center">
-	<img src="documentation/odyssey.png" width="35%" height="35%" /><br>
+    <img src="img/odyssey.png" width="35%" height="35%" /><br>
 </p>
 <br>
 
-## Odyssey
-
 Advanced multi-threaded PostgreSQL connection pooler and request router.
 
+Odyssey is production-ready, it is being used in large production setups.
+We appreciate any kind of feedback and contribution to the project.
 
-## Welcome to GitHub Pages
+## Why Odyssey
 
-You can use the [editor on GitHub](https://github.com/yandex/odyssey/edit/master/docs/index.md) to maintain and preview the content for your website in Markdown files.
+### Multi-threaded processing
 
-Whenever you commit to this repository, GitHub Pages will run [Jekyll](https://jekyllrb.com/) to rebuild the pages in your site, from the content in your Markdown files.
+Odyssey can significantly scale processing performance by
+specifying a number of additional worker threads. Each worker thread is
+responsible for authentication and proxying client-to-server and server-to-client
+requests. All worker threads are sharing global server connection pools.
+Multi-threaded design plays important role in `SSL/TLS` performance.
 
+### Advanced transactional pooling
 
+Odyssey tracks current transaction state and in case of unexpected client
+disconnection can emit automatic `Cancel` connection and do `Rollback` of
+abandoned transaction, before putting server connection back to
+the server pool for reuse. Additionally, last server connection owner client
+is remembered to reduce a need for setting up client options on each
+client-to-server assignment.
 
-### Markdown
+### Better pooling control
 
+Odyssey allows to define connection pools as a pair of `Database` and `User`.
+Each defined pool can have separate authentication, pooling mode and limits settings.
 
-```markdown
-Syntax highlighted code block
+### Authentication
 
-# Header 1
-## Header 2
-### Header 3
+Odyssey has full-featured `SSL/TLS` support and common authentication methods
+like: `md5` and `clear text` both for client and server authentication. 
+Odyssey supports PAM & LDAP authentication, this methods operates similarly to `clear text` auth except that it uses 
+PAM/LDAP to validate user name/password pairs. PAM optionally checks the connected remote host name or IP address.
+Additionally it allows to block each pool user separately.
 
-- Bulleted
-- List
+### Architecture and internals
 
-1. Numbered
-2. List
+Odyssey has sophisticated asynchronous multi-threaded architecture which
+is driven by custom made coroutine engine: [machinarium](https://github.com/yandex/odyssey/tree/master/sources/machinarium).
+Main idea behind coroutine design is to make event-driven asynchronous applications to look and feel
+like being written in synchronous-procedural manner instead of using traditional
+callback approach.
 
-**Bold** and _Italic_ and `Code` text
+One of the main goal was to make code base understandable for new developers and
+to make an architecture easily extensible for future development.
 
-[Link](url) and ![Image](src)
-```
-
-For more details see [GitHub Flavored Markdown](https://guides.github.com/features/mastering-markdown/).
-
-### Jekyll Themes
-
-Your Pages site will use the layout and styles from the Jekyll theme you have selected in your [repository settings](https://github.com/yandex/odyssey/settings). The name of this theme is saved in the Jekyll `_config.yml` configuration file.
-
-### Support or Contact
-
-Having trouble with Pages? Check out our [documentation](https://docs.github.com/categories/github-pages-basics/) or [contact support](https://github.com/contact) and we’ll help you sort it out.
+More information: [Architecture and internals](development/internals.md).

@@ -1,0 +1,28 @@
+name: Stress tests
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+    paths:
+      - "sources/**"
+      - "test/**"
+      - "CMakeLists.txt"
+      - "docker/**"
+      - "modules/**"
+      - "cmake/**"
+      - "!docker/prom-exporter/**"
+jobs:
+  functional:
+    name: Stress
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build-type: ['build_release', 'build_asan', 'build_dbg']
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Odyssey stress tests
+      run: make stress-tests ODYSSEY_BUILD_TYPE=${{ matrix.build-type }}

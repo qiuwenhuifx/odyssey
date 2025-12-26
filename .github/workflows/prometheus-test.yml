@@ -1,0 +1,27 @@
+name: Build with prometheus
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+    paths:
+      - "sources/**"
+      - "test/**"
+      - "CMakeLists.txt"
+      - "docker/**"
+      - "modules/**"
+      - "cmake/**"
+      - "!docker/prom-exporter/**"
+jobs:
+  prom:
+    name: prom
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build-type: ['build_release', 'build_dbg', 'build_asan']
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Odyssey build with prometheus test
+      run: make prometheus-legacy-test ODYSSEY_BUILD_TYPE=${{ matrix.build-type }}

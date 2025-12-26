@@ -3,15 +3,17 @@
  *
  * Scalable PostgreSQL connection pooler.
  */
-
-#include <kiwi.h>
-#include <machinarium.h>
 #include <odyssey.h>
+
+#include <machinarium/machinarium.h>
+
+#include <pool.h>
+#include <od_memory.h>
 
 od_rule_pool_t *od_rule_pool_alloc()
 {
 	od_rule_pool_t *pool;
-	pool = malloc(sizeof(od_rule_pool_t));
+	pool = od_malloc(sizeof(od_rule_pool_t));
 
 	if (pool == NULL) {
 		return NULL;
@@ -30,51 +32,59 @@ od_rule_pool_t *od_rule_pool_alloc()
 int od_rule_pool_free(od_rule_pool_t *pool)
 {
 	if (pool->routing_type) {
-		free(pool->routing_type);
+		od_free(pool->routing_type);
 	}
-	if (pool->type) {
-		free(pool->type);
+	if (pool->pool_type_str) {
+		od_free(pool->pool_type_str);
 	}
 	if (pool->discard_query) {
-		free(pool->discard_query);
+		od_free(pool->discard_query);
 	}
-	free(pool);
+	od_free(pool);
 	return OK_RESPONSE;
 }
 
 int od_rule_pool_compare(od_rule_pool_t *a, od_rule_pool_t *b)
 {
 	/* pool */
-	if (a->pool != b->pool)
+	if (a->pool_type != b->pool_type) {
 		return 0;
+	}
 
 	/* pool routing */
-	if (a->routing != b->routing)
+	if (a->routing != b->routing) {
 		return 0;
+	}
 
 	/* size */
-	if (a->size != b->size)
+	if (a->size != b->size) {
 		return 0;
+	}
 
 	/* timeout */
-	if (a->timeout != b->timeout)
+	if (a->timeout != b->timeout) {
 		return 0;
+	}
 
 	/* ttl */
-	if (a->ttl != b->ttl)
+	if (a->ttl != b->ttl) {
 		return 0;
+	}
 
 	/* pool_discard */
-	if (a->discard != b->discard)
+	if (a->discard != b->discard) {
 		return 0;
+	}
 
 	/* cancel */
-	if (a->cancel != b->cancel)
+	if (a->cancel != b->cancel) {
 		return 0;
+	}
 
 	/* rollback*/
-	if (a->rollback != b->rollback)
+	if (a->rollback != b->rollback) {
 		return 0;
+	}
 
 	/* client idle timeout */
 	if (a->client_idle_timeout != b->client_idle_timeout) {
@@ -91,6 +101,10 @@ int od_rule_pool_compare(od_rule_pool_t *a, od_rule_pool_t *b)
 		return 0;
 	}
 
+	if (a->min_size != b->min_size) {
+		return 0;
+	}
+
 	return 1;
 }
 
@@ -102,7 +116,7 @@ int od_rule_matches_client(od_rule_pool_t *pool, od_pool_client_type_t t)
 	case OD_POOL_CLIENT_EXTERNAL:
 		return pool->routing == OD_RULE_POOL_CLIENT_VISIBLE;
 	default:
-		// no macthes
+		/* no matches */
 		return 0;
 	}
 }

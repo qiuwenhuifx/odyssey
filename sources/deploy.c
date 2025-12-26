@@ -5,9 +5,16 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <kiwi.h>
-#include <machinarium.h>
 #include <odyssey.h>
+
+#include <machinarium/machinarium.h>
+
+#include <types.h>
+#include <client.h>
+#include <global.h>
+#include <server.h>
+#include <route.h>
+#include <instance.h>
 
 int od_deploy(od_client_t *client, char *context)
 {
@@ -33,13 +40,15 @@ int od_deploy(od_client_t *client, char *context)
 		query_size++;
 		machine_msg_t *msg;
 		msg = kiwi_fe_write_query(NULL, query, query_size);
-		if (msg == NULL)
+		if (msg == NULL) {
 			return -1;
+		}
 
 		int rc;
 		rc = od_write(&server->io, msg);
-		if (rc == -1)
+		if (rc == -1) {
 			return -1;
+		}
 
 		query_count++;
 		client->server->synced_settings = false;

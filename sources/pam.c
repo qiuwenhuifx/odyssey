@@ -5,10 +5,15 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <machinarium.h>
 #include <odyssey.h>
 
+#include <machinarium/machinarium.h>
+
 #include <security/pam_appl.h>
+
+#include <pam.h>
+#include <od_memory.h>
+#include <dns.h>
 
 struct sss {
 	char *psswd;
@@ -19,12 +24,14 @@ static int od_pam_conversation(int msgc, const struct pam_message **msgv,
 			       struct pam_response **rspv, void *authdata)
 {
 	od_pam_auth_data_t *auth_data = authdata;
-	if (msgc < 1 || msgv == NULL)
+	if (msgc < 1 || msgv == NULL) {
 		return PAM_CONV_ERR;
+	}
 
-	*rspv = malloc(msgc * sizeof(struct pam_response));
-	if (*rspv == NULL)
+	*rspv = od_malloc(msgc * sizeof(struct pam_response));
+	if (*rspv == NULL) {
 		return PAM_CONV_ERR;
+	}
 	memset(*rspv, 0, msgc * sizeof(struct pam_response));
 
 	int rc = PAM_SUCCESS;
@@ -56,12 +63,12 @@ static int od_pam_conversation(int msgc, const struct pam_message **msgv,
 							link);
 				if (param->msg_style ==
 				    msgv[counter]->msg_style) {
-					free((*rspv)[counter].resp);
+					od_free((*rspv)[counter].resp);
 					break;
 				}
 			}
 		}
-		free(*rspv);
+		od_free(*rspv);
 		*rspv = NULL;
 	}
 
@@ -79,8 +86,9 @@ int od_pam_auth(char *od_pam_service, char *usrname,
 	pam_handle_t *pamh = NULL;
 	int rc;
 	rc = pam_start(od_pam_service, usrname, &conv, &pamh);
-	if (rc != PAM_SUCCESS)
+	if (rc != PAM_SUCCESS) {
 		goto error;
+	}
 
 	char peer[128];
 	od_getpeername(io, peer, sizeof(peer), 1, 0);
@@ -90,16 +98,19 @@ int od_pam_auth(char *od_pam_service, char *usrname,
 	}
 
 	rc = pam_authenticate(pamh, PAM_SILENT);
-	if (rc != PAM_SUCCESS)
+	if (rc != PAM_SUCCESS) {
 		goto error;
+	}
 
 	rc = pam_acct_mgmt(pamh, PAM_SILENT);
-	if (rc != PAM_SUCCESS)
+	if (rc != PAM_SUCCESS) {
 		goto error;
+	}
 
 	rc = pam_end(pamh, rc);
-	if (rc != PAM_SUCCESS)
+	if (rc != PAM_SUCCESS) {
 		return -1;
+	}
 
 	return 0;
 
@@ -120,7 +131,7 @@ void od_pam_convert_passwd(od_pam_auth_data_t *d, char *passwd)
 		}
 		return;
 	}
-	od_pam_auth_data_t *passwd_data = malloc(sizeof(od_pam_auth_data_t));
+	od_pam_auth_data_t *passwd_data = od_malloc(sizeof(od_pam_auth_data_t));
 	passwd_data->msg_style = PAM_PROMPT_ECHO_OFF;
 	passwd_data->value = strdup(passwd);
 
@@ -130,9 +141,10 @@ void od_pam_convert_passwd(od_pam_auth_data_t *d, char *passwd)
 od_pam_auth_data_t *od_pam_auth_data_create(void)
 {
 	od_pam_auth_data_t *d =
-		(od_pam_auth_data_t *)malloc(sizeof(od_pam_auth_data_t));
-	if (d == NULL)
+		(od_pam_auth_data_t *)od_malloc(sizeof(od_pam_auth_data_t));
+	if (d == NULL) {
 		return NULL;
+	}
 	od_list_init(&d->link);
 	return d;
 }
@@ -144,8 +156,8 @@ void od_pam_auth_data_free(od_pam_auth_data_t *d)
 	{
 		od_pam_auth_data_t *current =
 			od_container_of(i, od_pam_auth_data_t, link);
-		free(current->value);
+		od_free(current->value);
 	}
 	od_list_unlink(&d->link);
-	free(d);
+	od_free(d);
 }

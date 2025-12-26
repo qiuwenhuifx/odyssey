@@ -5,9 +5,24 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <kiwi.h>
-#include <machinarium.h>
 #include <odyssey.h>
+
+#include <machinarium/machinarium.h>
+#include <kiwi/kiwi.h>
+
+#include <types.h>
+#include <auth_query.h>
+#include <logger.h>
+#include <attach.h>
+#include <client.h>
+#include <internal_client.h>
+#include <global.h>
+#include <hashmap.h>
+#include <pool.h>
+#include <storage.h>
+#include <router.h>
+#include <instance.h>
+#include <query.h>
 
 static inline int od_auth_parse_passwd_from_datarow(od_logger_t *logger,
 						    machine_msg_t *msg,
@@ -20,17 +35,20 @@ static inline int od_auth_parse_passwd_from_datarow(od_logger_t *logger,
 	uint32_t size;
 	int rc;
 	rc = kiwi_read32(&size, &pos, &pos_size);
-	if (kiwi_unlikely(rc == -1))
+	if (kiwi_unlikely(rc == -1)) {
 		goto error;
+	}
 	/* count */
 	uint16_t count;
 	rc = kiwi_read16(&count, &pos, &pos_size);
 
-	if (kiwi_unlikely(rc == -1))
+	if (kiwi_unlikely(rc == -1)) {
 		goto error;
+	}
 
-	if (count != 2)
+	if (count != 2) {
 		goto error;
+	}
 
 	/* user (not used) */
 	uint32_t user_len;
@@ -49,16 +67,19 @@ static inline int od_auth_parse_passwd_from_datarow(od_logger_t *logger,
 
 	/* password */
 
-	// The length of the column value, in bytes (this count does not include itself).
-	// Can be zero.
-	// As a special case, -1 indicates a NULL column value. No value bytes follow in the NULL case.
+	/*
+	 * The length of the column value, in bytes (this count does not include itself).
+	 * Can be zero.
+	 * As a special case, -1 indicates a NULL column value. No value bytes follow in the NULL case.
+	 */
 	uint32_t password_len;
 	rc = kiwi_read32(&password_len, &pos, &pos_size);
 
 	if (kiwi_unlikely(rc == -1)) {
 		goto error;
 	}
-	// --1
+
+	/* the case of -1 */
 	if (password_len == UINT_MAX) {
 		result->password = NULL;
 		result->password_len = password_len + 1;
@@ -69,7 +90,7 @@ static inline int od_auth_parse_passwd_from_datarow(od_logger_t *logger,
 		goto success;
 	}
 
-	if (password_len > ODYSSEY_AUTH_QUERY_MAX_PASSSWORD_LEN) {
+	if (password_len > ODYSSEY_AUTH_QUERY_MAX_PASSWORD_LEN) {
 		goto error;
 	}
 
@@ -79,7 +100,7 @@ static inline int od_auth_parse_passwd_from_datarow(od_logger_t *logger,
 		goto error;
 	}
 
-	result->password = malloc(password_len + 1);
+	result->password = od_malloc(password_len + 1);
 	if (result->password == NULL) {
 		goto error;
 	}
@@ -123,7 +144,7 @@ int od_auth_query(od_client_t *client, char *peer)
 	if (value->data == NULL) {
 		/* one-time initialize */
 		value->len = sizeof(od_auth_cache_value_t);
-		value->data = malloc(value->len);
+		value->data = od_malloc(value->len);
 		/* OOM */
 		if (value->data == NULL) {
 			goto error;
@@ -144,7 +165,8 @@ int od_auth_query(od_client_t *client, char *peer)
 		password->password_len = cache_value->passwd_len;
 		if (cache_value->passwd_len > 0) {
 			/*  */
-			password->password = malloc(password->password_len + 1);
+			password->password =
+				od_malloc(password->password_len + 1);
 			if (password->password == NULL) {
 				goto error;
 			}
@@ -197,41 +219,16 @@ int od_auth_query(od_client_t *client, char *peer)
 		goto error;
 	}
 
-	/* attach */
-	status = od_router_attach(router, auth_client, false);
-	if (status != OD_ROUTER_OK) {
-		od_debug(
-			&instance->logger, "auth_query", auth_client, NULL,
-			"failed to attach internal auth query client to route: %s",
-			od_router_status_to_str(status));
+	int rc;
+	rc = od_attach_extended(instance, "auth_query", router, auth_client);
+	if (rc != OK_RESPONSE) {
 		od_router_unroute(router, auth_client);
-		od_client_free(auth_client);
+		od_client_free_extended(auth_client);
 		goto error;
 	}
+
 	od_server_t *server;
 	server = auth_client->server;
-
-	od_debug(&instance->logger, "auth_query", auth_client, server,
-		 "attached to server %s%.*s", server->id.id_prefix,
-		 (int)sizeof(server->id.id), server->id.id);
-
-	/* connect to server, if necessary */
-	int rc;
-	if (server->io.io == NULL) {
-		/* acquire new backend connection for auth query */
-		rc = od_backend_connect(server, "auth_query", NULL,
-					auth_client);
-		if (rc == NOT_OK_RESPONSE) {
-			od_debug(&instance->logger, "auth_query", auth_client,
-				 server,
-				 "failed to acquire backend connection: %s",
-				 od_io_error(&server->io));
-			od_router_close(router, auth_client);
-			od_router_unroute(router, auth_client);
-			od_client_free(auth_client);
-			goto error;
-		}
-	}
 
 	/* preformat and execute query */
 	char query[OD_QRY_MAX_SZ];
@@ -247,30 +244,36 @@ int od_auth_query(od_client_t *client, char *peer)
 		       "auth query returned empty msg");
 		od_router_close(router, auth_client);
 		od_router_unroute(router, auth_client);
-		od_client_free(auth_client);
+		od_client_free_extended(auth_client);
 		goto error;
 	}
-	if (od_auth_parse_passwd_from_datarow(&instance->logger, msg,
-					      password) == NOT_OK_RESPONSE) {
+	rc = od_auth_parse_passwd_from_datarow(&instance->logger, msg,
+					       password);
+	machine_msg_free(msg);
+	if (rc == NOT_OK_RESPONSE) {
 		od_debug(&instance->logger, "auth_query", auth_client, server,
-			 "auth query returned datarow in incompatable format");
+			 "auth query returned datarow in incompatible format");
 		od_router_close(router, auth_client);
 		od_router_unroute(router, auth_client);
-		od_client_free(auth_client);
+		od_client_free_extended(auth_client);
 		goto error;
 	}
 
-	/* save received password and recieve timestamp */
+	/* save received password and receive timestamp */
 	if (cache_value->passwd != NULL) {
 		/* drop previous value */
-		free(cache_value->passwd);
+		od_free(cache_value->passwd);
 
-		// there should be cache_value->passwd = NULL for sanity
-		// but this is meaninigless sinse we assing new value just below
+		/* there should be cache_value->passwd = NULL for sanity
+		* but this is meaninigless since we assign new value just below
+		*/
 	}
 	cache_value->passwd_len = password->password_len;
-	cache_value->passwd = malloc(password->password_len);
+	cache_value->passwd = od_malloc(password->password_len);
 	if (cache_value->passwd == NULL) {
+		od_router_close(router, auth_client);
+		od_router_unroute(router, auth_client);
+		od_client_free_extended(auth_client);
 		goto error;
 	}
 	strncpy(cache_value->passwd, password->password,
@@ -281,7 +284,7 @@ int od_auth_query(od_client_t *client, char *peer)
 	/* detach and unroute */
 	od_router_detach(router, auth_client);
 	od_router_unroute(router, auth_client);
-	od_client_free(auth_client);
+	od_client_free_extended(auth_client);
 	od_hashmap_unlock_key(storage->acache, keyhash, &key);
 	return OK_RESPONSE;
 

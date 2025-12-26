@@ -1,0 +1,56 @@
+# Soft OOM support
+*since 1.4.2*
+
+Sometimes, even when using a connection pooler, you may encounter
+Out Of Memory (OOM) situations on the PostgreSQL server. In such
+cases, it is advisable to temporarily suspend accepting new connections
+until PostgreSQL’s memory consumption returns to a normal level.
+To address this, we have implemented a "soft OOM" mechanism, which is
+described in detail below. This mechanism helps prevent further
+overloading the database by gracefully managing new connection attempts
+during memory pressure events.
+
+Soft OOM makes sense only for connections that is not local, that means,
+that Odyssey console will still works when your host is in OOM state.
+
+----
+
+## Configuration
+
+First of all you will need describe memory limitations in `soft-oom`
+section at the root of [configuration](../configuration/overview.md):
+
+```plaintext
+
+# for specified process
+soft_oom {
+    process 'postgres'
+    limit   750MB
+}
+
+# for whole system
+soft_oom {
+    limit   750MB
+}
+
+# top memory consumers terminating
+
+soft_oom {
+    limit 750MB
+
+    drop {
+        signal 'SIGTERM'
+        max_rate 2
+    }
+}
+```
+
+After that, all new connections to `db.user` will be answered by Odyssey
+itself process described in `soft_oom` reached limit by total memory consumption:
+
+```bash
+psql 'host=localhost port=6432 user=postgres dbname=postgres sslmode=disable' -c 'select 42'
+psql: error: connection to server at "localhost" (::1), port 6432 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+connection to server at "localhost" (127.0.0.1), port 6432 failed: FATAL:  odyssey: cbde8d0203caf: soft out of memory
+```

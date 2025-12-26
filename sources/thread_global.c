@@ -1,11 +1,19 @@
+/*
+ * Odyssey.
+ *
+ * Scalable PostgreSQL connection pooler.
+ */
 
-#include <kiwi.h>
-#include <machinarium.h>
 #include <odyssey.h>
+
+#include <machinarium/machinarium.h>
+
+#include <thread_global.h>
+#include <od_memory.h>
 
 od_retcode_t od_thread_global_init(od_thread_global **gl)
 {
-	*gl = malloc(sizeof(od_thread_global));
+	*gl = od_malloc(sizeof(od_thread_global));
 	if (*gl == NULL) {
 		return NOT_OK_RESPONSE;
 	}
@@ -28,7 +36,7 @@ od_retcode_t od_thread_global_free(od_thread_global *gl)
 		return rc;
 	}
 
-	free(gl);
+	od_free(gl);
 
 	return OK_RESPONSE;
 }

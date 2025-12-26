@@ -1,0 +1,51 @@
+name: build
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+    paths:
+      - "sources/**"
+      - "CMakeLists.txt"
+      - "test/**"
+      - "docker/**"
+      - "modules/**"
+      - "cmake/**"
+      - "!docker/prom-exporter/**"
+jobs:
+  ubuntu-build:
+    name: ubuntu-build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os-version: ['jammy', 'noble']
+        pg-version: ['14', '16', '17', '18']
+        build-type: ['build_release']
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Ubuntu build check
+      run: make ci-build-check-ubuntu ODYSSEY_BUILD_TYPE=${{ matrix.build-type }} ODYSSEY_POSTGRES_VERSION=${{ matrix.pg-version }} ODYSSEY_TEST_CODENAME=${{ matrix.os-version }}
+  fedora-build:
+    name: fedora-build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Fedora build check
+      run: make ci-build-check-fedora
+  oraclelinux-build:
+    name: oraclelinux-build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os-version: ['8', '9']
+        build-type: ['build_release', 'build_dbg']
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Oraclelinux build check
+      run: make ci-build-check-oracle-linux ODYSSEY_BUILD_TYPE=${{ matrix.build-type }} ODYSSEY_ORACLELINUX_VERSION=${{ matrix.os-version }}

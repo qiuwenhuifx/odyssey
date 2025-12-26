@@ -5,9 +5,18 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <kiwi.h>
-#include <machinarium.h>
 #include <odyssey.h>
+
+#include <machinarium/machinarium.h>
+
+#include <reset.h>
+#include <server.h>
+#include <route.h>
+#include <backend.h>
+#include <instance.h>
+#include <global.h>
+#include <query.h>
+#include <cancel.h>
 
 int od_reset(od_server_t *server)
 {
@@ -17,10 +26,10 @@ int od_reset(od_server_t *server)
 	/* server left in copy mode
 	 * check that number of received CopyIn/CopyOut Responses 
 	 * is equal to number received CopyDone msgs.
-	 * it is indeed very strange situation if this numbers diffence
+	 * it is indeed very strange situation if this numbers difference
 	 * is more that 1 (in absolute value).
 	 *
-	 * However, during client relay step this diffence may be negative,
+	 * However, during client relay step this difference may be negative,
 	 * if msg pipelining is used by driver.
 	 * Else drop connection, to avoid complexness of state maintenance
 	 */
@@ -64,9 +73,10 @@ int od_reset(od_server_t *server)
 	int wait_cancel_limit = 1;
 	od_retcode_t rc = 0;
 	for (;;) {
-		/* check that msg syncronization is not broken*/
-		if (server->relay.packet > 0)
+		/* check that msg synchronization is not broken*/
+		if (!od_relay_at_packet_begin(&server->relay)) {
 			goto error;
+		}
 
 		while (!od_server_synchronized(server)) {
 			od_debug(&instance->logger, "reset", server->client,
@@ -74,15 +84,17 @@ int od_reset(od_server_t *server)
 				 "not synchronized, wait for %d msec (#%d)",
 				 wait_timeout, wait_try);
 			wait_try++;
-			rc = od_backend_ready_wait(server, "reset", 1,
+			rc = od_backend_ready_wait(server, "reset",
 						   wait_timeout,
 						   1 /*ignore server errors*/);
-			if (rc == NOT_OK_RESPONSE)
+			if (rc == NOT_OK_RESPONSE) {
 				break;
+			}
 		}
 		if (rc == NOT_OK_RESPONSE) {
-			if (!machine_timedout())
+			if (!machine_timedout()) {
 				goto error;
+			}
 
 			/* support route cancel off */
 			if (!route->rule->pool->cancel) {
@@ -104,9 +116,11 @@ int od_reset(od_server_t *server)
 			       wait_try_cancel);
 			wait_try_cancel++;
 			rc = od_cancel(server->global, route->rule->storage,
+				       od_server_pool_address(server),
 				       &server->key, &server->id);
-			if (rc == NOT_OK_RESPONSE)
+			if (rc == NOT_OK_RESPONSE) {
 				goto error;
+			}
 			continue;
 		}
 		assert(od_server_synchronized(server));
@@ -123,9 +137,11 @@ int od_reset(od_server_t *server)
 	* advadance sync point first.
 	*/
 
+#ifdef FIX_ME_PLEASE
 	if (od_backend_request_sync_point(server) == NOT_OK_RESPONSE) {
 		goto error;
 	}
+#endif
 
 	od_debug(&instance->logger, "reset", server->client, server,
 		 "synchronized");
@@ -137,10 +153,11 @@ int od_reset(od_server_t *server)
 			char query_rlb[] = "ROLLBACK";
 			rc = od_backend_query(
 				server, "reset-rollback", query_rlb, NULL,
-				sizeof(query_rlb), wait_timeout, 1,
+				sizeof(query_rlb), wait_timeout,
 				0 /*do not ignore server error messages*/);
-			if (rc == NOT_OK_RESPONSE)
+			if (rc == NOT_OK_RESPONSE) {
 				goto error;
+			}
 			assert(!server->is_transaction);
 		}
 	}
@@ -150,10 +167,11 @@ int od_reset(od_server_t *server)
 		char query_discard[] = "DISCARD ALL";
 		rc = od_backend_query(
 			server, "reset-discard", query_discard, NULL,
-			sizeof(query_discard), wait_timeout, 1,
+			sizeof(query_discard), wait_timeout,
 			0 /*do not ignore server error messages*/);
-		if (rc == NOT_OK_RESPONSE)
+		if (rc == NOT_OK_RESPONSE) {
 			goto error;
+		}
 	}
 
 	/* send smart discard */
@@ -163,20 +181,22 @@ int od_reset(od_server_t *server)
 			"SET SESSION AUTHORIZATION DEFAULT;RESET ALL;CLOSE ALL;UNLISTEN *;SELECT pg_advisory_unlock_all();DISCARD PLANS;DISCARD SEQUENCES;DISCARD TEMP;";
 		rc = od_backend_query(
 			server, "reset-discard-smart", query_discard, NULL,
-			sizeof(query_discard), wait_timeout, 1,
+			sizeof(query_discard), wait_timeout,
 			0 /*do not ignore server error messages*/);
-		if (rc == NOT_OK_RESPONSE)
+		if (rc == NOT_OK_RESPONSE) {
 			goto error;
+		}
 	}
 	if (route->rule->pool->discard_query != NULL) {
 		rc = od_backend_query(
 			server, "reset-discard-smart-string",
 			route->rule->pool->discard_query, NULL,
 			strlen(route->rule->pool->discard_query) + 1,
-			wait_timeout, 1,
+			wait_timeout,
 			0 /*do not ignore server error messages*/);
-		if (rc == NOT_OK_RESPONSE)
+		if (rc == NOT_OK_RESPONSE) {
 			goto error;
+		}
 	}
 
 	if (machine_iov_pending(server->relay.iov)) {

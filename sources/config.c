@@ -6,9 +6,17 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <kiwi.h>
-#include <machinarium.h>
 #include <odyssey.h>
+
+#include <unistd.h>
+
+#include <machinarium/machinarium.h>
+
+#include <types.h>
+#include <router.h>
+#include <config.h>
+#include <od_memory.h>
+#include <debugprintf.h>
 
 void od_config_init(od_config_t *config)
 {
@@ -29,8 +37,10 @@ void od_config_init(od_config_t *config)
 	config->pid_file = NULL;
 	config->unix_socket_dir = NULL;
 	config->locks_dir = NULL;
-	config->enable_online_restart_feature = 0;
-	config->bindwith_reuseport = 0;
+	config->external_auth_socket_path = NULL;
+	config->enable_online_restart_feature = 1;
+	config->online_restart_drop_options.drop_enabled = 1;
+	config->bindwith_reuseport = 1;
 	config->graceful_die_on_errors = 0;
 	config->unix_socket_mode = NULL;
 
@@ -38,13 +48,13 @@ void od_config_init(od_config_t *config)
 	config->log_syslog_ident = NULL;
 	config->log_syslog_facility = NULL;
 
-	config->readahead = 8192;
+	config->readahead = sysconf(_SC_PAGESIZE);
 	config->nodelay = 1;
 
 	config->keepalive = 15;
 	config->keepalive_keep_interval = 5;
 	config->keepalive_probes = 3;
-	config->keepalive_usr_timeout = 0; // use sys default
+	config->keepalive_usr_timeout = 0; /* use sys default */
 
 	config->workers = 1;
 	config->resolvers = 1;
@@ -56,15 +66,35 @@ void od_config_init(od_config_t *config)
 	config->cache_msg_gc_size = 0;
 	config->coroutine_stack_size = 4;
 	config->hba_file = NULL;
+	config->max_sigterms_to_die = 3;
+	config->group_checker_interval = 7000; /* 7 seconds */
 	od_list_init(&config->listen);
+
+	config->backend_connect_timeout_ms = 30U * 1000U; /* 30 seconds */
+	config->virtual_processing = 0;
+
+	config->graceful_shutdown_timeout_ms = 30 * 1000; /* 30 seconds */
+
+	memset(config->availability_zone, 0, sizeof(config->availability_zone));
+
+	memset(&config->soft_oom, 0, sizeof(config->soft_oom));
+	config->soft_oom.check_interval_ms = 1000;
+	config->soft_oom.drop.enabled = 0;
+	config->soft_oom.drop.max_rate = 3;
+	config->soft_oom.drop.signal = SIGTERM;
+
+	config->host_watcher_enabled = 0;
 }
 
 void od_config_reload(od_config_t *current_config, od_config_t *new_config)
 {
 	current_config->client_max_set = new_config->client_max_set;
 	current_config->client_max = new_config->client_max;
+	current_config->max_sigterms_to_die = new_config->max_sigterms_to_die;
 	current_config->client_max_routing = new_config->client_max_routing;
 	current_config->server_login_retry = new_config->server_login_retry;
+	current_config->backend_connect_timeout_ms =
+		new_config->backend_connect_timeout_ms;
 }
 
 static void od_config_listen_free(od_config_listen_t *);
@@ -78,29 +108,42 @@ void od_config_free(od_config_t *config)
 		listen = od_container_of(i, od_config_listen_t, link);
 		od_config_listen_free(listen);
 	}
-	if (config->log_file)
-		free(config->log_file);
-	if (config->log_format)
-		free(config->log_format);
-	if (config->pid_file)
-		free(config->pid_file);
-	if (config->unix_socket_dir)
-		free(config->unix_socket_dir);
-	if (config->log_syslog_ident)
-		free(config->log_syslog_ident);
-	if (config->log_syslog_facility)
-		free(config->log_syslog_facility);
+	if (config->unix_socket_mode) {
+		od_free(config->unix_socket_mode);
+	}
+	if (config->log_file) {
+		od_free(config->log_file);
+	}
+	if (config->log_format) {
+		od_free(config->log_format);
+	}
+	if (config->pid_file) {
+		od_free(config->pid_file);
+	}
+	if (config->unix_socket_dir) {
+		od_free(config->unix_socket_dir);
+	}
+	if (config->log_syslog_ident) {
+		od_free(config->log_syslog_ident);
+	}
+	if (config->log_syslog_facility) {
+		od_free(config->log_syslog_facility);
+	}
 	if (config->locks_dir) {
-		free(config->locks_dir);
-		if (config->hba_file)
-			free(config->hba_file);
+		od_free(config->locks_dir);
+		if (config->hba_file) {
+			od_free(config->hba_file);
+		}
+	}
+	if (config->external_auth_socket_path) {
+		od_free(config->external_auth_socket_path);
 	}
 }
 
 od_config_listen_t *od_config_listen_add(od_config_t *config)
 {
 	od_config_listen_t *listen =
-		(od_config_listen_t *)malloc(sizeof(od_config_listen_t));
+		(od_config_listen_t *)od_malloc(sizeof(od_config_listen_t));
 	if (listen == NULL) {
 		return NULL;
 	}
@@ -109,13 +152,14 @@ od_config_listen_t *od_config_listen_add(od_config_t *config)
 
 	listen->tls_opts = od_tls_opts_alloc();
 	if (listen->tls_opts == NULL) {
-		free(listen);
+		od_free(listen);
 		return NULL;
 	}
 
 	listen->port = 6432;
 	listen->backlog = 128;
 	listen->client_login_timeout = 15000;
+	listen->target_session_attrs = OD_TARGET_SESSION_ATTRS_UNDEF;
 
 	od_list_init(&listen->link);
 	od_list_append(&config->listen, &listen->link);
@@ -125,13 +169,14 @@ od_config_listen_t *od_config_listen_add(od_config_t *config)
 
 static void od_config_listen_free(od_config_listen_t *config)
 {
-	if (config->host)
-		free(config->host);
+	if (config->host) {
+		od_free(config->host);
+	}
 
 	if (config->tls_opts) {
 		od_tls_opts_free(config->tls_opts);
 	}
-	free(config);
+	od_free(config);
 }
 
 int od_config_validate(od_config_t *config, od_logger_t *logger)
@@ -247,32 +292,37 @@ void od_config_print(od_config_t *config, od_logger_t *logger)
 	       config->priority);
 	od_log(logger, "config", NULL, NULL, "sequential_routing      %s",
 	       od_config_yes_no(config->sequential_routing));
-	if (config->pid_file)
+	if (config->pid_file) {
 		od_log(logger, "config", NULL, NULL,
 		       "pid_file                %s", config->pid_file);
+	}
 	if (config->unix_socket_dir) {
 		od_log(logger, "config", NULL, NULL,
 		       "unix_socket_dir         %s", config->unix_socket_dir);
 		od_log(logger, "config", NULL, NULL,
 		       "unix_socket_mode        %s", config->unix_socket_mode);
 	}
-	if (config->log_format)
+	if (config->log_format) {
 		od_log(logger, "config", NULL, NULL,
 		       "log_format              %s", config->log_format);
-	if (config->log_file)
+	}
+	if (config->log_file) {
 		od_log(logger, "config", NULL, NULL,
 		       "log_file                %s", config->log_file);
+	}
 	od_log(logger, "config", NULL, NULL, "log_to_stdout           %s",
 	       od_config_yes_no(config->log_to_stdout));
 	od_log(logger, "config", NULL, NULL, "log_syslog              %s",
 	       od_config_yes_no(config->log_syslog));
-	if (config->log_syslog_ident)
+	if (config->log_syslog_ident) {
 		od_log(logger, "config", NULL, NULL,
 		       "log_syslog_ident        %s", config->log_syslog_ident);
-	if (config->log_syslog_facility)
+	}
+	if (config->log_syslog_facility) {
 		od_log(logger, "config", NULL, NULL,
 		       "log_syslog_facility     %s",
 		       config->log_syslog_facility);
+	}
 	od_log(logger, "config", NULL, NULL, "log_debug               %s",
 	       od_config_yes_no(config->log_debug));
 	od_log(logger, "config", NULL, NULL, "log_config              %s",
@@ -291,9 +341,10 @@ void od_config_print(od_config_t *config, od_logger_t *logger)
 	       od_config_yes_no(config->nodelay));
 	od_log(logger, "config", NULL, NULL, "keepalive               %d",
 	       config->keepalive);
-	if (config->client_max_set)
+	if (config->client_max_set) {
 		od_log(logger, "config", NULL, NULL,
 		       "client_max              %d", config->client_max);
+	}
 	od_log(logger, "config", NULL, NULL, "client_max_routing      %d",
 	       config->client_max_routing);
 	od_log(logger, "config", NULL, NULL, "server_login_retry      %d",
@@ -308,6 +359,10 @@ void od_config_print(od_config_t *config, od_logger_t *logger)
 	       config->workers);
 	od_log(logger, "config", NULL, NULL, "resolvers               %d",
 	       config->resolvers);
+	od_log(logger, "config", NULL, NULL, "backend_connect_timeout_ms %u",
+	       config->backend_connect_timeout_ms);
+	od_log(logger, "config", NULL, NULL, "enable_host_watcher.    %d",
+	       config->host_watcher_enabled);
 
 	if (config->enable_online_restart_feature) {
 		od_log(logger, "config", NULL, NULL,
@@ -321,8 +376,21 @@ void od_config_print(od_config_t *config, od_logger_t *logger)
 		od_log(logger, "config", NULL, NULL,
 		       "socket bind with:       SO_REUSEPORT");
 	}
-#ifdef USE_SCRAM
-	od_log(logger, "config", NULL, NULL, "SCRAM auth metod:       OK");
+
+	if (config->soft_oom.enabled) {
+		od_log(logger, "config", NULL, NULL,
+		       "soft_oom: check '%s' every %dms with limit %" PRIu64
+		       " bytes",
+		       config->soft_oom.process,
+		       config->soft_oom.check_interval_ms,
+		       config->soft_oom.limit_bytes);
+	} else {
+		od_log(logger, "config", NULL, NULL,
+		       "soft_oom:         DISABLED");
+	}
+
+#ifdef POSTGRESQL_FOUND
+	od_log(logger, "config", NULL, NULL, "SCRAM auth method:       OK");
 #endif
 
 	od_log(logger, "config", NULL, NULL, "");
@@ -338,25 +406,30 @@ void od_config_print(od_config_t *config, od_logger_t *logger)
 		       listen->port);
 		od_log(logger, "config", NULL, NULL, "  backlog       %d",
 		       listen->backlog);
-		if (listen->tls_opts->tls)
+		if (listen->tls_opts->tls) {
 			od_log(logger, "config", NULL, NULL,
 			       "  tls           %s", listen->tls_opts->tls);
-		if (listen->tls_opts->tls_ca_file)
+		}
+		if (listen->tls_opts->tls_ca_file) {
 			od_log(logger, "config", NULL, NULL,
 			       "  tls_ca_file   %s",
 			       listen->tls_opts->tls_ca_file);
-		if (listen->tls_opts->tls_key_file)
+		}
+		if (listen->tls_opts->tls_key_file) {
 			od_log(logger, "config", NULL, NULL,
 			       "  tls_key_file  %s",
 			       listen->tls_opts->tls_key_file);
-		if (listen->tls_opts->tls_cert_file)
+		}
+		if (listen->tls_opts->tls_cert_file) {
 			od_log(logger, "config", NULL, NULL,
 			       "  tls_cert_file %s",
 			       listen->tls_opts->tls_cert_file);
-		if (listen->tls_opts->tls_protocols)
+		}
+		if (listen->tls_opts->tls_protocols) {
 			od_log(logger, "config", NULL, NULL,
 			       "  tls_protocols %s",
 			       listen->tls_opts->tls_protocols);
+		}
 		od_log(logger, "config", NULL, NULL, "");
 	}
 }

@@ -4,9 +4,17 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <kiwi.h>
-#include <machinarium.h>
 #include <odyssey.h>
+
+#include <machinarium/machinarium.h>
+
+#include <od_ldap.h>
+#include <client.h>
+#include <route.h>
+#include <rules.h>
+#include <instance.h>
+#include <global.h>
+#include <frontend.h>
 
 od_retcode_t od_ldap_server_free(od_ldap_server_t *serv)
 {
@@ -16,56 +24,31 @@ od_retcode_t od_ldap_server_free(od_ldap_server_t *serv)
 		ldap_unbind(serv->conn);
 	}
 
-	free(serv);
+	od_free(serv);
 	return OK_RESPONSE;
 }
 
 static inline od_retcode_t od_ldap_error_report_client(od_client_t *cl, int rc)
 {
-	switch (rc) {
-	case LDAP_SUCCESS:
+	if (rc == LDAP_SUCCESS) {
 		return OK_RESPONSE;
-	case LDAP_INVALID_CREDENTIALS:
-		return NOT_OK_RESPONSE;
-	case LDAP_INSUFFICIENT_ACCESS: {
-		// disabling blind ldapsearch via odyssey error messages
-		// to collect user account attributes
-		od_frontend_error(cl, KIWI_SYNTAX_ERROR, "incorrect password");
-		return NOT_OK_RESPONSE;
 	}
-	case LDAP_UNAVAILABLE:
-	case LDAP_UNWILLING_TO_PERFORM:
-	case LDAP_BUSY: {
-		od_frontend_error(cl, KIWI_SYNTAX_ERROR,
-				  "LDAP auth failed: ldap server is down");
-		return NOT_OK_RESPONSE;
-	}
-	case LDAP_INVALID_SYNTAX: {
-		od_frontend_error(
-			cl, KIWI_SYNTAX_ERROR,
-			"LDAP auth failed: invalid attribute value was specified");
-		return NOT_OK_RESPONSE;
-	}
-	default: {
-#ifdef LDAP_DBG
-		od_frontend_error(cl, KIWI_SYNTAX_ERROR,
-				  "LDAP auth failed: %s %d",
-				  ldap_err2string(rc), rc);
-#else
-		od_frontend_error(cl, KIWI_SYNTAX_ERROR,
-				  "LDAP auth failed: unknown error");
-#endif
-		return NOT_OK_RESPONSE;
-	}
-	}
+
+	od_frontend_fatal(cl, KIWI_SYSTEM_ERROR,
+			  "ldap authentication failed for user \"%s\": %s (%d)",
+			  cl->startup.user.value, ldap_err2string(rc), rc);
+
+	return NOT_OK_RESPONSE;
 }
 
 static inline int od_init_ldap_conn(LDAP **l, char *uri)
 {
 	od_retcode_t rc = ldap_initialize(l, uri);
 	if (rc != LDAP_SUCCESS) {
-		// set to null, we do not need to unbind this
-		// ldap_initialize frees assosated memory
+		/*
+		 * set to null, we do not need to unbind this
+		 * ldap_initialize frees assosated memory
+		 */
 		*l = NULL;
 		return NOT_OK_RESPONSE;
 	}
@@ -74,7 +57,7 @@ static inline int od_init_ldap_conn(LDAP **l, char *uri)
 	rc = ldap_set_option(*l, LDAP_OPT_PROTOCOL_VERSION, &ldapversion);
 
 	if (rc != LDAP_SUCCESS) {
-		// same as above
+		/* same as above */
 		*l = NULL;
 		return NOT_OK_RESPONSE;
 	}
@@ -84,14 +67,14 @@ static inline int od_init_ldap_conn(LDAP **l, char *uri)
 od_retcode_t od_ldap_endpoint_prepare(od_ldap_endpoint_t *le)
 {
 	const char *scheme;
-	scheme = le->ldapscheme; // ldap or ldaps
+	scheme = le->ldapscheme; /* ldap or ldaps */
 	if (scheme == NULL) {
 		scheme = "ldap";
 	}
 
 	le->ldapurl = NULL;
 	if (!le->ldapserver) {
-		// TODO: support mulitple ldap servers
+		/* TODO: support multiple ldap servers */
 		return NOT_OK_RESPONSE;
 	}
 
@@ -163,16 +146,17 @@ od_retcode_t od_ldap_server_prepare(od_logger_t *logger, od_ldap_server_t *serv,
 	char *auth_user = NULL;
 
 	if (serv->endpoint->ldapbasedn) {
-		// copy pasted from ./src/backend/libpq/auth.c:2635
-		char *filter;
+		/* copy pasted from ./src/backend/libpq/auth.c:2635 */
+		char *filter = NULL;
 		LDAPMessage *search_message;
 		LDAPMessage *entry;
 		char *attributes[] = { LDAP_NO_ATTRS, NULL };
 		char *dn;
 		int count;
 
-		if (rule->ldap_storage_credentials_attr)
+		if (rule->ldap_storage_credentials_attr) {
 			attributes[0] = rule->ldap_storage_credentials_attr;
+		}
 
 		if (serv->endpoint->ldapsearchattribute) {
 			od_asprintf(&filter, "(%s=%s)",
@@ -184,8 +168,15 @@ od_retcode_t od_ldap_server_prepare(od_logger_t *logger, od_ldap_server_t *serv,
 		}
 
 		if (serv->endpoint->ldapsearchfilter) {
-			od_asprintf(&filter, "(&%s%s)", filter,
+			char *prev_filter = strdup(filter);
+			od_free(filter);
+			if (prev_filter == NULL) {
+				return NOT_OK_RESPONSE;
+			}
+
+			od_asprintf(&filter, "(&%s%s)", prev_filter,
 				    serv->endpoint->ldapsearchfilter);
+			od_free(prev_filter);
 		}
 
 		rc = ldap_search_s(serv->conn, serv->endpoint->ldapbasedn,
@@ -196,10 +187,11 @@ od_retcode_t od_ldap_server_prepare(od_logger_t *logger, od_ldap_server_t *serv,
 			 "basedn search entries with filter: %s and attrib %s ",
 			 filter, attributes[0]);
 
+		od_free(filter);
+
 		if (rc != LDAP_SUCCESS) {
 			od_error(logger, "auth_ldap", client, NULL,
 				 "basednn search result: %d", rc);
-			free(filter);
 			return NOT_OK_RESPONSE;
 		}
 
@@ -209,13 +201,10 @@ od_retcode_t od_ldap_server_prepare(od_logger_t *logger, od_ldap_server_t *serv,
 				 "basedn search entries count: %d", count);
 
 			if (count == 0) {
-				free(filter);
 				ldap_msgfree(search_message);
 				return LDAP_INSUFFICIENT_ACCESS;
-			} else {
 			}
 
-			free(filter);
 			ldap_msgfree(search_message);
 			return NOT_OK_RESPONSE;
 		}
@@ -223,7 +212,7 @@ od_retcode_t od_ldap_server_prepare(od_logger_t *logger, od_ldap_server_t *serv,
 		entry = ldap_first_entry(serv->conn, search_message);
 		dn = ldap_get_dn(serv->conn, entry);
 		if (dn == NULL) {
-			// TODO: report err
+			/* TODO: report err */
 			return NOT_OK_RESPONSE;
 		}
 
@@ -235,7 +224,6 @@ od_retcode_t od_ldap_server_prepare(od_logger_t *logger, od_ldap_server_t *serv,
 				rc = od_ldap_search_storage_credentials(
 					logger, values, rule, client);
 				if (rc != OK_RESPONSE) {
-					free(filter);
 					ldap_memfree(dn);
 					ldap_value_free_len(values);
 					ldap_msgfree(search_message);
@@ -244,7 +232,6 @@ od_retcode_t od_ldap_server_prepare(od_logger_t *logger, od_ldap_server_t *serv,
 			} else {
 				od_debug(logger, "auth_ldap", client, NULL,
 					 "error: empty search results");
-				free(filter);
 				ldap_memfree(dn);
 				ldap_value_free_len(values);
 				ldap_msgfree(search_message);
@@ -254,7 +241,6 @@ od_retcode_t od_ldap_server_prepare(od_logger_t *logger, od_ldap_server_t *serv,
 		}
 		auth_user = strdup(dn);
 
-		free(filter);
 		ldap_memfree(dn);
 		ldap_msgfree(search_message);
 
@@ -265,12 +251,12 @@ od_retcode_t od_ldap_server_prepare(od_logger_t *logger, od_ldap_server_t *serv,
 	} else {
 		od_asprintf(&auth_user, "%s%s%s",
 			    serv->endpoint->ldapprefix ?
-					  serv->endpoint->ldapprefix :
-					  "",
+				    serv->endpoint->ldapprefix :
+				    "",
 			    client->startup.user.value,
 			    serv->endpoint->ldapsuffix ?
-					  serv->endpoint->ldapsuffix :
-					  "");
+				    serv->endpoint->ldapsuffix :
+				    "");
 	}
 
 	client->ldap_auth_dn = auth_user;
@@ -280,7 +266,7 @@ od_retcode_t od_ldap_server_prepare(od_logger_t *logger, od_ldap_server_t *serv,
 
 od_ldap_server_t *od_ldap_server_allocate()
 {
-	od_ldap_server_t *serv = malloc(sizeof(od_ldap_server_t));
+	od_ldap_server_t *serv = od_malloc(sizeof(od_ldap_server_t));
 	serv->conn = NULL;
 	serv->endpoint = NULL;
 
@@ -305,11 +291,11 @@ od_retcode_t od_ldap_server_init(od_logger_t *logger, od_ldap_server_t *server,
 
 	rc = ldap_simple_bind_s(server->conn,
 				server->endpoint->ldapbinddn ?
-					      server->endpoint->ldapbinddn :
-					      "",
+					server->endpoint->ldapbinddn :
+					"",
 				server->endpoint->ldapbindpasswd ?
-					      server->endpoint->ldapbindpasswd :
-					      "");
+					server->endpoint->ldapbindpasswd :
+					"");
 
 	if (rc) {
 		od_error(logger, "auth_ldap", NULL, NULL,
@@ -333,13 +319,17 @@ static inline int od_ldap_server_auth(od_ldap_server_t *serv, od_client_t *cl,
 	return rc;
 }
 
+/*#define USE_POOL */
+
 od_ldap_server_t *od_ldap_server_pull(od_logger_t *logger, od_rule_t *rule,
 				      bool auth_pool)
 {
-	od_retcode_t rc;
+	(void)auth_pool;
+
 	od_ldap_endpoint_t *le = rule->ldap_endpoint;
 	od_ldap_server_t *ldap_server = NULL;
 
+#if USE_POOL
 	od_server_pool_t *ldap_server_pool;
 	if (auth_pool) {
 		ldap_server_pool = le->ldap_auth_pool;
@@ -350,8 +340,10 @@ od_ldap_server_t *od_ldap_server_pull(od_logger_t *logger, od_rule_t *rule,
 	od_debug(logger, "auth_ldap", NULL, NULL,
 		 "total connections in selected pool: %d",
 		 od_server_pool_total(ldap_server_pool));
+#endif
 	od_ldap_endpoint_lock(le);
 
+#if USE_POOL
 	/* get client server from route server pool */
 	for (;;) {
 		ldap_server = od_ldap_server_pool_next(ldap_server_pool,
@@ -383,7 +375,7 @@ od_ldap_server_t *od_ldap_server_pull(od_logger_t *logger, od_rule_t *rule,
 		if (false) {
 			/* special case, when we are interested only in an idle connection
 			 * and do not want to start a new one */
-			// NOT IMPL
+			/* NOT IMPL */
 			od_ldap_endpoint_unlock(le);
 			return NULL;
 		} else {
@@ -395,8 +387,10 @@ od_ldap_server_t *od_ldap_server_pull(od_logger_t *logger, od_rule_t *rule,
 			int pool_size = rule->ldap_pool_size;
 
 			if (pool_size == 0 || connections_in_pool < pool_size) {
-				// TODO: better limit logic here
-				// We are allowed to spun new server connection
+				/*
+				 * TODO: better limit logic here
+				 * We are allowed to spun new server connection
+				 */
 				od_debug(
 					logger, "auth_ldap", NULL, NULL,
 					"spun new connection to ldap server %s",
@@ -414,8 +408,9 @@ od_ldap_server_t *od_ldap_server_pull(od_logger_t *logger, od_rule_t *rule,
 		od_ldap_endpoint_unlock(le);
 
 		uint32_t timeout = rule->ldap_pool_timeout;
-		if (timeout == 0)
+		if (timeout == 0) {
 			timeout = UINT32_MAX;
+		}
 		rc = od_ldap_endpoint_wait(le, timeout);
 
 		if (rc == -1) {
@@ -424,6 +419,7 @@ od_ldap_server_t *od_ldap_server_pull(od_logger_t *logger, od_rule_t *rule,
 
 		od_ldap_endpoint_lock(le);
 	}
+#endif
 
 	if (ldap_server == NULL) {
 		/* create new server object */
@@ -439,9 +435,10 @@ od_ldap_server_t *od_ldap_server_pull(od_logger_t *logger, od_rule_t *rule,
 			od_ldap_endpoint_unlock(le);
 			return NULL;
 		}
-
+#if USE_POOL
 		od_ldap_server_pool_set(ldap_server_pool, ldap_server,
 					OD_SERVER_ACTIVE);
+#endif
 		od_ldap_endpoint_unlock(le);
 	}
 
@@ -460,7 +457,7 @@ static inline od_retcode_t od_ldap_server_attach(od_client_t *client)
 		od_ldap_server_pull(logger, client->rule, false);
 
 	if (server == NULL) {
-		od_error(&instance->logger, "auth_ldap", client, NULL,
+		od_error(&instance->logger, "auth_ldap_prepare", client, NULL,
 			 "failed to get ldap connection on attach");
 		if (client->rule->client_fwd_error) {
 			od_ldap_error_report_client(client, NOT_OK_RESPONSE);
@@ -474,15 +471,21 @@ static inline od_retcode_t od_ldap_server_attach(od_client_t *client)
 	if (rc == NOT_OK_RESPONSE) {
 		od_debug(&instance->logger, "auth_ldap", client, NULL,
 			 "closing bad ldap connection, need relogin");
+#if USE_POOL
 		od_ldap_server_pool_set(
 			client->rule->ldap_endpoint->ldap_search_pool, server,
 			OD_SERVER_UNDEF);
+#endif
 		od_ldap_server_free(server);
 	} else {
-		server->idle_timestamp = time(NULL);
+		server->idle_timestamp = (int)time(NULL);
+#if USE_POOL
 		od_ldap_server_pool_set(
 			client->rule->ldap_endpoint->ldap_search_pool, server,
 			OD_SERVER_IDLE);
+#else
+		od_ldap_server_free(server);
+#endif
 	}
 
 	od_ldap_endpoint_unlock(client->rule->ldap_endpoint);
@@ -518,51 +521,56 @@ od_retcode_t od_auth_ldap(od_client_t *cl, kiwi_password_t *tok)
 		od_ldap_server_pull(&instance->logger, cl->rule, true);
 
 	if (serv == NULL) {
-		od_debug(&instance->logger, "auth_ldap", cl, NULL,
-			 "failed to get ldap connection");
+		od_error(&instance->logger, "auth_ldap", cl, NULL,
+			 "failed to get ldap connection for auth");
 		return NOT_OK_RESPONSE;
 	}
 
-	size_t retry_cnt = 3;
-	while (retry_cnt--) {
-		ldap_rc = od_ldap_server_auth(serv, cl, tok);
+	ldap_rc = od_ldap_server_auth(serv, cl, tok);
 
-		od_ldap_endpoint_lock(cl->rule->ldap_endpoint);
+	od_ldap_endpoint_lock(cl->rule->ldap_endpoint);
 
-		switch (ldap_rc) {
-		case LDAP_SUCCESS: {
-			serv->idle_timestamp = (int)time(NULL);
-			od_ldap_server_pool_set(
-				cl->rule->ldap_endpoint->ldap_auth_pool, serv,
-				OD_SERVER_IDLE);
-			rc = OK_RESPONSE;
-			break;
-		}
-		case LDAP_INVALID_SYNTAX:
-			/* fallthrough */
-		case LDAP_INVALID_CREDENTIALS: {
-			serv->idle_timestamp = (int)time(NULL);
-			od_ldap_server_pool_set(
-				cl->rule->ldap_endpoint->ldap_auth_pool, serv,
-				OD_SERVER_IDLE);
-			rc = NOT_OK_RESPONSE;
-			break;
-		}
-		default: {
-			/*Need to rebind */
-			od_ldap_server_pool_set(
-				cl->rule->ldap_endpoint->ldap_auth_pool, serv,
-				OD_SERVER_UNDEF);
-			od_ldap_server_free(serv);
-			rc = NOT_OK_RESPONSE;
-			break;
-		}
-		}
+	switch (ldap_rc) {
+	case LDAP_SUCCESS: {
+		serv->idle_timestamp = (int)time(NULL);
+#if USE_POOL
+		od_ldap_server_pool_set(cl->rule->ldap_endpoint->ldap_auth_pool,
+					serv, OD_SERVER_IDLE);
+#else
+		od_ldap_server_free(serv);
+#endif
+		rc = OK_RESPONSE;
+		break;
+	}
+	case LDAP_INVALID_SYNTAX:
+		/* fallthrough */
+	case LDAP_INVALID_CREDENTIALS: {
+		serv->idle_timestamp = (int)time(NULL);
+#if USE_POOL
+		od_ldap_server_pool_set(cl->rule->ldap_endpoint->ldap_auth_pool,
+					serv, OD_SERVER_IDLE);
+#else
 
-		od_ldap_endpoint_unlock(cl->rule->ldap_endpoint);
-		if (rc == OK_RESPONSE) {
-			return rc;
-		}
+		od_ldap_server_free(serv);
+#endif
+		rc = NOT_OK_RESPONSE;
+		break;
+	}
+	default: {
+/*Need to rebind */
+#if USE_POOL
+		od_ldap_server_pool_set(cl->rule->ldap_endpoint->ldap_auth_pool,
+					serv, OD_SERVER_UNDEF);
+#endif
+		od_ldap_server_free(serv);
+		rc = NOT_OK_RESPONSE;
+		break;
+	}
+	}
+
+	od_ldap_endpoint_unlock(cl->rule->ldap_endpoint);
+	if (rc == OK_RESPONSE) {
+		return rc;
 	}
 
 	return rc;
@@ -577,12 +585,12 @@ od_retcode_t od_ldap_conn_close(od_attribute_unused() od_route_t *route,
 	return OK_RESPONSE;
 }
 
-//----------------------------------------------------------------------------------------
+/*---------------------------------------------------------------------------------------- */
 
 /* ldap endpoints ADD/REMOVE API */
 od_ldap_endpoint_t *od_ldap_endpoint_alloc()
 {
-	od_ldap_endpoint_t *le = malloc(sizeof(od_ldap_endpoint_t));
+	od_ldap_endpoint_t *le = od_malloc(sizeof(od_ldap_endpoint_t));
 	if (le == NULL) {
 		return NULL;
 	}
@@ -603,16 +611,19 @@ od_ldap_endpoint_t *od_ldap_endpoint_alloc()
 	le->ldapscope = NULL;
 	le->ldapbasedn = NULL;
 	le->ldapbinddn = NULL;
-	// preparsed connect url
+	/* preparsed connect url */
 	le->ldapurl = NULL;
 
-	od_server_pool_t *ldap_auth_pool = malloc(sizeof(od_server_pool_t));
+#ifdef USE_POOL
+	od_server_pool_t *ldap_auth_pool = od_malloc(sizeof(od_server_pool_t));
 	od_server_pool_init(ldap_auth_pool);
 	le->ldap_auth_pool = ldap_auth_pool;
 
-	od_server_pool_t *ldap_search_pool = malloc(sizeof(od_server_pool_t));
+	od_server_pool_t *ldap_search_pool =
+		od_malloc(sizeof(od_server_pool_t));
 	od_server_pool_init(ldap_search_pool);
 	le->ldap_search_pool = ldap_search_pool;
+#endif
 
 	le->wait_bus = machine_channel_create();
 	if (le->wait_bus == NULL) {
@@ -627,43 +638,44 @@ od_ldap_endpoint_t *od_ldap_endpoint_alloc()
 od_retcode_t od_ldap_endpoint_free(od_ldap_endpoint_t *le)
 {
 	if (le->name) {
-		free(le->name);
+		od_free(le->name);
 	}
 
 	if (le->ldapserver) {
-		free(le->ldapserver);
+		od_free(le->ldapserver);
 	}
 	if (le->ldapscheme) {
-		free(le->ldapscheme);
+		od_free(le->ldapscheme);
 	}
 
 	if (le->ldapprefix) {
-		free(le->ldapprefix);
+		od_free(le->ldapprefix);
 	}
 	if (le->ldapsuffix) {
-		free(le->ldapsuffix);
+		od_free(le->ldapsuffix);
 	}
 	if (le->ldapbindpasswd) {
-		free(le->ldapbindpasswd);
+		od_free(le->ldapbindpasswd);
 	}
 	if (le->ldapsearchfilter) {
-		free(le->ldapsearchfilter);
+		od_free(le->ldapsearchfilter);
 	}
 	if (le->ldapsearchattribute) {
-		free(le->ldapsearchattribute);
+		od_free(le->ldapsearchattribute);
 	}
 	if (le->ldapscope) {
-		free(le->ldapscope);
+		od_free(le->ldapscope);
 	}
 	if (le->ldapbasedn) {
-		free(le->ldapbasedn);
+		od_free(le->ldapbasedn);
 	}
-	// preparsed connect url
+	/* preparsed connect url */
 	if (le->ldapurl) {
-		free(le->ldapurl);
+		od_free(le->ldapurl);
 	}
 
 	od_list_unlink(&le->link);
+#if USE_POOL
 	if (le->ldap_search_pool) {
 		od_ldap_server_pool_free(le->ldap_search_pool);
 	}
@@ -671,12 +683,14 @@ od_retcode_t od_ldap_endpoint_free(od_ldap_endpoint_t *le)
 	if (le->ldap_auth_pool) {
 		od_ldap_server_pool_free(le->ldap_auth_pool);
 	}
+#endif
 
 	pthread_mutex_destroy(&le->lock);
-	if (le->wait_bus)
+	if (le->wait_bus) {
 		machine_channel_free(le->wait_bus);
+	}
 
-	free(le);
+	od_free(le);
 
 	return OK_RESPONSE;
 }
@@ -684,7 +698,7 @@ od_retcode_t od_ldap_endpoint_free(od_ldap_endpoint_t *le)
 od_ldap_storage_credentials_t *od_ldap_storage_credentials_alloc()
 {
 	od_ldap_storage_credentials_t *lsc =
-		malloc(sizeof(od_ldap_storage_credentials_t));
+		od_malloc(sizeof(od_ldap_storage_credentials_t));
 	if (lsc == NULL) {
 		return NULL;
 	}
@@ -702,20 +716,20 @@ od_retcode_t
 od_ldap_storage_credentials_free(od_ldap_storage_credentials_t *lsc)
 {
 	if (lsc->name) {
-		free(lsc->name);
+		od_free(lsc->name);
 	}
 
 	if (lsc->lsc_username) {
-		free(lsc->lsc_username);
+		od_free(lsc->lsc_username);
 	}
 
 	if (lsc->lsc_password) {
-		free(lsc->lsc_password);
+		od_free(lsc->lsc_password);
 	}
 
 	od_list_unlink(&lsc->link);
 
-	free(lsc);
+	od_free(lsc);
 
 	return OK_RESPONSE;
 }

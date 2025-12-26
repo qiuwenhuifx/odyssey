@@ -1,0 +1,24 @@
+name: Quickstart image test
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+    paths:
+      - "sources/**"
+      - "test/**"
+      - "CMakeLists.txt"
+      - "docker/**"
+      - "modules/**"
+      - "cmake/**"
+      - "!docker/prom-exporter/**"
+jobs:
+  quickstart-image-build:
+    name: quickstart-image-build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Odyssey quickstart image test
+      run: make quickstart_test

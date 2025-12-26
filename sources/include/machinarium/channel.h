@@ -1,0 +1,45 @@
+#pragma once
+
+/*
+ * machinarium.
+ *
+ * cooperative multitasking engine.
+ */
+
+#include <machinarium/event.h>
+#include <machinarium/msg.h>
+#include <machinarium/list.h>
+#include <machinarium/sleep_lock.h>
+#include <machinarium/channel_limit.h>
+#include <machinarium/macro.h>
+
+typedef struct mm_channelrd mm_channelrd_t;
+typedef struct mm_channel mm_channel_t;
+
+struct mm_channelrd {
+	mm_event_t event;
+	mm_msg_t *result;
+	mm_list_t link;
+};
+
+struct mm_channel {
+	mm_sleeplock_t lock;
+	mm_list_t msg_list;
+	int msg_list_count;
+	mm_list_t readers;
+	int readers_count;
+	int chan_limit;
+	mm_channel_limit_policy_t limit_policy;
+};
+
+void mm_channel_init(mm_channel_t *);
+void mm_channel_free(mm_channel_t *);
+mm_retcode_t mm_channel_write(mm_channel_t *, mm_msg_t *);
+
+mm_msg_t *mm_channel_read(mm_channel_t *, uint32_t);
+mm_msg_t *mm_channel_read_back(mm_channel_t *, uint32_t);
+
+static inline int mm_channel_get_size(mm_channel_t *chan)
+{
+	return chan->msg_list_count;
+}

@@ -5,11 +5,13 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <arpa/inet.h>
-#include <kiwi.h>
-#include <machinarium.h>
 #include <odyssey.h>
-#include <address.h>
+
+#include <machinarium/machinarium.h>
+
+#include <hba_reader.h>
+#include <parser.h>
+#include <config_reader.h>
 
 enum {
 	OD_LLOCAL,
@@ -36,6 +38,7 @@ static od_keyword_t od_hba_keywords[] = {
 	od_keyword("trust", OD_LALLOW),
 	od_keyword("deny", OD_LDENY),
 	od_keyword("reject", OD_LDENY),
+	{ 0, 0, 0 },
 };
 
 static void od_hba_reader_error(od_config_reader_t *reader, char *msg)
@@ -55,18 +58,21 @@ static int od_hba_parser_next(od_parser_t *parser, od_token_t *token)
 	/* skip white spaces and comments */
 	for (;;) {
 		while (parser->pos < parser->end && isspace(*parser->pos)) {
-			if (*parser->pos == '\n')
+			if (*parser->pos == '\n') {
 				parser->line++;
+			}
 			parser->pos++;
 		}
 		if (od_unlikely(parser->pos == parser->end)) {
 			token->type = OD_PARSER_EOF;
 			return token->type;
 		}
-		if (*parser->pos != '#')
+		if (*parser->pos != '#') {
 			break;
-		while (parser->pos < parser->end && *parser->pos != '\n')
+		}
+		while (parser->pos < parser->end && *parser->pos != '\n') {
 			parser->pos++;
+		}
 		if (parser->pos == parser->end) {
 			token->type = OD_PARSER_EOF;
 			return token->type;
@@ -88,8 +94,9 @@ static int od_hba_parser_next(od_parser_t *parser, od_token_t *token)
 		token->line = parser->line;
 		token->value.string.pointer = parser->pos;
 		while (parser->pos < parser->end && *parser->pos != ',' &&
-		       (isalnum(*parser->pos) || ispunct(*parser->pos)))
+		       (isalnum(*parser->pos) || ispunct(*parser->pos))) {
 			parser->pos++;
+		}
 		token->value.string.size =
 			parser->pos - token->value.string.pointer;
 		return token->type;
@@ -125,14 +132,15 @@ static int od_hba_parser_next(od_parser_t *parser, od_token_t *token)
 
 static int od_hba_reader_match_string(od_token_t token, char **value)
 {
-	char *copy = malloc(token.value.string.size + 1);
+	char *copy = od_malloc(token.value.string.size + 1);
 	if (copy == NULL) {
 		return NOT_OK_RESPONSE;
 	}
 	memcpy(copy, token.value.string.pointer, token.value.string.size);
 	copy[token.value.string.size] = 0;
-	if (*value)
-		free(*value);
+	if (*value) {
+		od_free(*value);
+	}
 	*value = copy;
 	return OK_RESPONSE;
 }
@@ -236,6 +244,7 @@ int od_hba_reader_parse(od_config_reader_t *reader)
 		int rc;
 		rc = od_hba_reader_value(reader, &connection_type);
 		if (rc == OD_PARSER_EOF) {
+			od_hba_rule_free(hba);
 			return 0;
 		}
 		if (rc != OD_PARSER_KEYWORD) {
@@ -282,8 +291,9 @@ int od_hba_reader_parse(od_config_reader_t *reader)
 				goto error;
 			}
 			mask = strchr(address, '/');
-			if (mask)
+			if (mask) {
 				*mask++ = 0;
+			}
 
 			if (od_address_read(&hba->address_range.addr,
 					    address) == NOT_OK_RESPONSE) {
@@ -316,6 +326,10 @@ int od_hba_reader_parse(od_config_reader_t *reader)
 						reader, "invalid network mask");
 					goto error;
 				}
+			}
+
+			if (address) {
+				free(address);
 			}
 		}
 

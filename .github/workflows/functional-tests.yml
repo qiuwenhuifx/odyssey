@@ -1,0 +1,30 @@
+name: Functional tests
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+    paths:
+      - "sources/**"
+      - "test/**"
+      - "CMakeLists.txt"
+      - "docker/**"
+      - "modules/**"
+      - "cmake/**"
+      - "!docker/prom-exporter/**"
+jobs:
+  functional:
+    name: Functional
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        build-type: ['build_release', 'build_asan', 'build_dbg']
+        cc: ['clang', 'gcc']
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Odyssey functional tests
+      run: make functional-test ODYSSEY_BUILD_TYPE=${{ matrix.build-type }} ODYSSEY_CC=${{ matrix.cc }}

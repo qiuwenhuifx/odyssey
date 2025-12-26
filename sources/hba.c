@@ -7,6 +7,13 @@
 
 #include <odyssey.h>
 
+#include <list.h>
+#include <hba.h>
+#include <hba_rule.h>
+#include <client.h>
+#include <global.h>
+#include <instance.h>
+
 void od_hba_init(od_hba_t *hba)
 {
 	pthread_mutex_init(&hba->lock, NULL);
@@ -33,8 +40,18 @@ void od_hba_reload(od_hba_t *hba, od_hba_rules_t *rules)
 {
 	od_hba_lock(hba);
 
+	od_hba_rules_free(&hba->rules);
+
 	od_list_init(&hba->rules);
-	memcpy(&hba->rules, &rules, sizeof(rules));
+
+	od_list_t *i, *n;
+	od_list_foreach_safe(rules, i, n)
+	{
+		od_hba_rule_t *rule;
+		rule = od_container_of(i, od_hba_rule_t, link);
+
+		od_hba_rules_add(&hba->rules, rule);
+	}
 
 	od_hba_unlock(hba);
 }
@@ -81,8 +98,9 @@ int od_hba_process(od_client_t *client)
 	int salen = sizeof(sa);
 	struct sockaddr *saddr = (struct sockaddr *)&sa;
 	int rc = machine_getpeername(client->io.io, saddr, &salen);
-	if (rc == -1)
+	if (rc == -1) {
 		return -1;
+	}
 
 	od_hba_lock(hba);
 	rules = &hba->rules;
@@ -92,8 +110,9 @@ int od_hba_process(od_client_t *client)
 	{
 		rule = od_container_of(i, od_hba_rule_t, link);
 		if (sa.ss_family == AF_UNIX) {
-			if (rule->connection_type != OD_CONFIG_HBA_LOCAL)
+			if (rule->connection_type != OD_CONFIG_HBA_LOCAL) {
 				continue;
+			}
 		} else if (rule->connection_type == OD_CONFIG_HBA_LOCAL) {
 			continue;
 		} else if (rule->connection_type == OD_CONFIG_HBA_HOSTSSL &&
@@ -120,7 +139,7 @@ int od_hba_process(od_client_t *client)
 		}
 
 		rc = rule->auth_method == OD_CONFIG_HBA_ALLOW ? OK_RESPONSE :
-								      NOT_OK_RESPONSE;
+								NOT_OK_RESPONSE;
 
 		return rc;
 	}

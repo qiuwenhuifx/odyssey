@@ -1,19 +1,20 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.16)
 
 project(odyssey C)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH}
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
-set(CLANGCOMPILERSTANDART gnu11)
+set(CMAKE_C_STANDARD 23)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(OD_VERSION_GIT $ENV{VERSION})
 if ("${OD_VERSION_GIT}" STREQUAL "")
-    execute_process(COMMAND git describe --always
+    execute_process(COMMAND git rev-parse --short HEAD
                     OUTPUT_VARIABLE OD_VERSION_GIT
                     RESULT_VARIABLE OD_VERSION_GIT_RESULT
-                    OUTPUT_STRIP_TRAILING_WHITESPACE
-                    ERROR_QUIET)
+                    OUTPUT_STRIP_TRAILING_WHITESPACE)
     
     if(NOT "${OD_VERSION_GIT_RESULT}" STREQUAL "0")
         add_definitions(-DOD_VERSION_GIT="unknown")
@@ -26,12 +27,10 @@ endif()
 
 set(OD_VERSION_NUMBER $ENV{BUILD_NUMBER})
 if ("${OD_VERSION_NUMBER}" STREQUAL "")
-
     execute_process(COMMAND git rev-list --count HEAD
                     OUTPUT_VARIABLE OD_VERSION_NUMBER
                     RESULT_VARIABLE OD_VERSION_NUMBER_RESULT
-                    OUTPUT_STRIP_TRAILING_WHITESPACE
-                    ERROR_QUIET)
+                    OUTPUT_STRIP_TRAILING_WHITESPACE)
 
     if(NOT "${OD_VERSION_NUMBER_RESULT}" STREQUAL "0")
         add_definitions(-DOD_VERSION_NUMBER="unknown")
@@ -41,30 +40,32 @@ if ("${OD_VERSION_NUMBER}" STREQUAL "")
 else()
     add_definitions(-DOD_VERSION_NUMBER="${OD_VERSION_NUMBER}")
 endif()
+set(OD_VERSION_NUMBER "1.4.1-${OD_VERSION_NUMBER}")
+
+set(OD_VERSION "${OD_VERSION_NUMBER}-${OD_VERSION_GIT}")
 
 execute_process(COMMAND ${CMAKE_C_COMPILER} --version
         OUTPUT_VARIABLE OD_COMPILER_VERSION
         RESULT_VARIABLE OD_COMPILER_VERSION_RESULT
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET)
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
 
 
 set(OD_DEVEL_LVL -1)
 
 if ("${CMAKE_BUILD_TYPE}" STREQUAL "")
-        set(CMAKE_BUILD_TYPE "Debug")
-        set(OD_DEVEL_LVL 1)
+    set(CMAKE_BUILD_TYPE "Debug")
+    set(OD_DEVEL_LVL 1)
 endif()
 if ("${CMAKE_BUILD_TYPE}" STREQUAL "Release")
-        set(CMAKE_C_FLAGS "-std=${CLANGCOMPILERSTANDART} -pedantic -Wall -Wextra -Wstrict-aliasing -g -O2 -pthread -D_GNU_SOURCE")
-        set(OD_DEVEL_LVL -1)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pedantic -Wall -Wextra -Werror -Wstrict-aliasing -g -O2 -pthread -D_GNU_SOURCE")
+    set(OD_DEVEL_LVL -1)
 elseif("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
-        set(CMAKE_C_FLAGS "-std=${CLANGCOMPILERSTANDART} -pedantic -Wall -Wextra -Wstrict-aliasing -g -O0 -pthread -D_GNU_SOURCE -DLDAP_DBG")
-        set(OD_DEVEL_LVL 1)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pedantic -Wall -Wextra -Werror -Wstrict-aliasing -g -O0 -pthread -D_GNU_SOURCE")
+    set(OD_DEVEL_LVL 1)
 elseif("${CMAKE_BUILD_TYPE}" STREQUAL "ASAN")
-        set(CMAKE_C_FLAGS "-std=${CLANGCOMPILERSTANDART} -g -fsanitize=address,undefined -fno-sanitize-recover=all -pedantic -Wall -Wextra -Wstrict-aliasing -g -O0 -pthread -D_GNU_SOURCE")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -fsanitize=address,undefined,leak -fno-sanitize-recover=all -fno-omit-frame-pointer -pedantic -Werror -Wall -Wextra -Wstrict-aliasing -g -O0 -pthread -D_GNU_SOURCE")
 elseif("${CMAKE_BUILD_TYPE}" STREQUAL "TSAN")
-        set(CMAKE_C_FLAGS "-std=${CLANGCOMPILERSTANDART} -g -fsanitize=thread -fno-sanitize-recover=all -pedantic -Wall -Wextra -Wstrict-aliasing -g -O0 -pthread -D_GNU_SOURCE")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -fsanitize=thread -fno-sanitize-recover=all -fno-omit-frame-pointer -pedantic -Wall -Werror -Wextra -Wstrict-aliasing -g -O0 -pthread -D_GNU_SOURCE")
 endif()
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${CC_FLAGS}")
@@ -76,19 +77,15 @@ set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 find_package(Threads REQUIRED)
 
 add_custom_target(build_libs)
-set(od_libraries "rt")
-
-# debian build
-option(BUILD_DEBIAN "Enable Debian Build" OFF)
-if (BUILD_DEBIAN)
-    include(BuildDebian)
-endif()
+set(od_libraries "rt" "dl")
 
 # postgresql
-find_package(PostgreSQL REQUIRED)
+find_package(PostgreSQL)
 
-set(od_libraries ${od_libraries} ${POSTGRESQL_LIBRARY} ${POSTGRESQL_LIBPGPORT} ${PQ_LIBRARY})
-include_directories(${POSTGRESQL_INCLUDE_DIR})
+if (POSTGRESQL_FOUND)
+	set(od_libraries ${od_libraries} ${POSTGRESQL_LIBRARY} ${POSTGRESQL_LIBPGPORT} ${PQ_LIBRARY})
+	include_directories(${POSTGRESQL_INCLUDE_DIR})
+endif()
 
 set(OPENSSL_INCLUDE_DIR $ENV{OPENSSL_INCLUDE_DIR})
 set(OPENSSL_LIBRARIES $ENV{OPENSSL_LIBRARIES})
@@ -131,29 +128,44 @@ endif()
 
 set(od_libraries ${od_libraries} ${od_ldap})
 
+# use systemd (for sd_notify support)
+find_package(PkgConfig)
+if (PKG_CONFIG_FOUND)
+    pkg_check_modules(SYSTEMD libsystemd)
+    if (SYSTEMD_FOUND)
+        set(od_systemd ${SYSTEMD_LIBRARIES})
+        include_directories(${SYSTEMD_INCLUDE_DIRS})
+        link_directories(${SYSTEMD_LIBRARY_DIRS})
+        add_definitions(-DHAVE_SYSTEMD)
+    endif()
+endif()
+
+set(od_libraries ${od_libraries} ${od_systemd})
+
+# use cJSON (for JSON logging support)
+find_package(cJSON)
+if (CJSON_FOUND)
+    set(od_cjson ${CJSON_LIBRARY})
+    include_directories(${CJSON_INCLUDE_DIR})
+    add_definitions(-DHAVE_CJSON)
+endif()
+
+set(od_libraries ${od_libraries} ${od_cjson})
+
 # use Prom
 find_package(Prom)
+find_package(Promhttp)
 
-if (PROMHTTP_FOUND)
+if (PROM_FOUND AND PROMHTTP_FOUND)
+    set(od_prom ${PROM_LIBRARY})
+    include_directories(${PROM_INCLUDE_DIR})
     set(od_promhttp ${PROMHTTP_LIBRARY})
     include_directories(${PROMHTTP_INCLUDE_DIR})
 endif()
 
-set(od_libraries ${od_libraries} ${od_promhttp})
-
-
-if (PROM_FOUND)
-    set(od_prom ${PROM_LIBRARY})
-    include_directories(${PROM_INCLUDE_DIR})
-endif()
-
 set(od_libraries ${od_libraries} ${od_prom})
-
-#scram
-
-if (USE_SCRAM)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DUSE_SCRAM")
-endif()
+set(od_libraries ${od_libraries} ${od_promhttp})
+set(od_libraries ${od_libraries} ${od_ssl})
 
 #compression
 option(BUILD_COMPRESSION "Build with compression support" OFF)
@@ -177,33 +189,15 @@ if(BUILD_COMPRESSION)
     endif()
 endif()
 
-# machinarium
-include(BuildMachinarium)
-build_machinarium()
-set(od_libraries ${od_libraries} ${MACHINARIUM_LIBRARIES} ${od_ssl} "dl")
-include_directories(${MACHINARIUM_INCLUDE_DIRS})
-
-# kiwi
-include(BuildKiwi)
-build_kiwi()
-set(od_libraries ${od_libraries} ${KIWI_LIBRARIES})
-include_directories(${KIWI_INCLUDE_DIRS})
-
-
 message(STATUS "")
 message(STATUS "Odyssey (version: ${OD_VERSION_NUMBER}-${OD_VERSION_GIT}-${OD_VERSION_BUILD})")
 message(STATUS "")
-message(STATUS "using compiler:         ${CMAKE_C_COMPILER} version 
-${OD_COMPILER_VERSION}")
-message(STATUS "c lang standart:        ${CLANGCOMPILERSTANDART}")
+message(STATUS "using compiler:         ${CMAKE_C_COMPILER} version ${OD_COMPILER_VERSION}")
+message(STATUS "c lang standard:        ${CMAKE_C_STANDARD}")
 message(STATUS "                                                                          ")
 message(STATUS "CMAKE_BUILD_TYPE:       ${CMAKE_BUILD_TYPE}")
+message(STATUS "CMAKE_C_FLAGS:          ${CMAKE_C_FLAGS}")
 message(STATUS "BUILD_DEBIAN:           ${BUILD_DEBIAN}")
-message(STATUS "POSTGRESQL_INCLUDE_DIR: ${POSTGRESQL_INCLUDE_DIR}")
-message(STATUS "POSTGRESQL_LIBRARY:     ${POSTGRESQL_LIBRARY}")
-message(STATUS "POSTGRESQL_LIBPGPORT:   ${POSTGRESQL_LIBPGPORT}")
-message(STATUS "PG_VERSION_NUM:         ${PG_VERSION_NUM}")
-message(STATUS "PQ_LIBRARY:             ${PQ_LIBRARY}")
 message(STATUS "USE_BORINGSSL:          ${USE_BORINGSSL}")
 message(STATUS "BORINGSSL_ROOT_DIR:     ${BORINGSSL_ROOT_DIR}")
 message(STATUS "BORINGSSL_INCLUDE_DIR:  ${BORINGSSL_INCLUDE_DIR}")
@@ -218,9 +212,15 @@ if (PAM_FOUND)
 endif()
 
 
-message(STATUS "USE_SCRAM:              ${USE_SCRAM}")
+message(STATUS "POSTGRESQL_FOUND:       ${POSTGRESQL_FOUND}")
+if (POSTGRESQL_FOUND)
+    message(STATUS "POSTGRESQL_INCLUDE_DIR: ${POSTGRESQL_INCLUDE_DIR}")
+    message(STATUS "POSTGRESQL_LIBRARY:     ${POSTGRESQL_LIBRARY}")
+    message(STATUS "POSTGRESQL_LIBPGPORT:   ${POSTGRESQL_LIBPGPORT}")
+    message(STATUS "PG_VERSION_NUM:         ${PG_VERSION_NUM}")
+    message(STATUS "PQ_LIBRARY:             ${PQ_LIBRARY}")
+endif()
 
-    
 message(STATUS "BUILD_COMPRESSION:      ${BUILD_COMPRESSION}")
 if (BUILD_COMPRESSION)
     message(STATUS "ZSTD_INCLUDE_DIR:       ${ZSTD_INCLUDE_DIR}")
@@ -235,6 +235,22 @@ if (LDAP_FOUND)
     message(STATUS "LDAP_INCLUDE_DIR:       ${LDAP_INCLUDE_DIR}")
 endif()
 
+message(STATUS "SYSTEMD_FOUND:          ${SYSTEMD_FOUND}")
+if (SYSTEMD_FOUND)
+    message(STATUS "SYSTEMD_LIBRARIES:      ${SYSTEMD_LIBRARIES}")
+    message(STATUS "SYSTEMD_INCLUDE_DIRS:   ${SYSTEMD_INCLUDE_DIRS}")
+endif()
+
+message(STATUS "CJSON_FOUND:            ${CJSON_FOUND}")
+if (CJSON_FOUND)
+    message(STATUS "CJSON_LIBRARY:          ${CJSON_LIBRARY}")
+    message(STATUS "CJSON_INCLUDE_DIR:      ${CJSON_INCLUDE_DIR}")
+endif()
+
 add_subdirectory(sources)
-add_subdirectory(test)
-add_subdirectory(stress)
+
+set(OD_INSTALL_PREFIX "/usr/bin/")
+
+install(TARGETS odyssey DESTINATION "${OD_INSTALL_PREFIX}")
+
+include(Packaging)

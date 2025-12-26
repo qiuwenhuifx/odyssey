@@ -4,8 +4,12 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <machinarium.h>
 #include <odyssey.h>
+
+#include <machinarium/machinarium.h>
+
+#include <od_dlsym.h>
+#include <module.h>
 
 void od_modules_init(od_module_t *module)
 {
@@ -48,7 +52,7 @@ int od_target_module_add(od_logger_t *logger, od_module_t *modules,
 	if (!handle) {
 		if (logger) {
 			od_log(logger, "load_module", NULL, NULL,
-			       "errors while openning %s module: %s",
+			       "errors while opening %s module: %s",
 			       target_module_path, dlerror());
 		} else {
 			printf("errors while opening %s module: %s",
@@ -62,8 +66,9 @@ int od_target_module_add(od_logger_t *logger, od_module_t *modules,
 	}
 
 	if (strlen(module_ptr->path) + strlen(target_module_path) + 1 >
-	    sizeof(module_ptr->path))
+	    sizeof(module_ptr->path)) {
 		goto error_close_handle;
+	}
 
 	module_ptr->handle = handle;
 	od_list_init(&module_ptr->link);
@@ -114,12 +119,13 @@ int od_target_module_unload(od_logger_t *logger, od_module_t *modules,
 		if (strcmp(m->path, target_module) == 0) {
 			int rc;
 			rc = m->unload_cb();
-			if (rc != OD_MODULE_CB_OK_RETCODE)
+			if (rc != OD_MODULE_CB_OK_RETCODE) {
 				return -1;
+			}
 			void *h = m->handle;
 			m->handle = NULL;
 			od_module_free(m);
-			// because we cannot access handle after calling dlclose
+			/* because we cannot access handle after calling dlclose */
 			if (od_dlclose(h)) {
 				goto error;
 			}
@@ -151,12 +157,13 @@ int od_modules_unload(od_logger_t *logger, od_module_t *modules)
 		m = od_container_of(i, od_module_t, link);
 		int rc;
 		rc = m->unload_cb();
-		if (rc != OD_MODULE_CB_OK_RETCODE)
+		if (rc != OD_MODULE_CB_OK_RETCODE) {
 			return -1;
+		}
 		void *h = m->handle;
 		m->handle = NULL;
 		od_module_free(m);
-		// because we cannot access handle after calling dlclose
+		/* because we cannot access handle after calling dlclose */
 		if (od_dlclose(h)) {
 			goto error;
 		}
@@ -181,7 +188,7 @@ int od_modules_unload_fast(od_module_t *modules)
 		void *h = m->handle;
 		m->handle = NULL;
 		od_module_free(m);
-		// because we cannot access handle after calling dlclose
+		/* because we cannot access handle after calling dlclose */
 		if (od_dlclose(h)) {
 			return OD_MODULE_CB_FAIL_RETCODE;
 		}

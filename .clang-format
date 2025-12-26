@@ -16,6 +16,7 @@ AlignConsecutiveAssignments: false
 AlignConsecutiveDeclarations: false
 AlignEscapedNewlines: Left # Unknown to clang-format-4.0
 AlignOperands: true
+InsertNewlineAtEOF: true
 AlignConsecutiveMacros: false
 AlignTrailingComments: false
 AllowAllParametersOfDeclarationOnNextLine: false
@@ -30,6 +31,7 @@ AlwaysBreakBeforeMultilineStrings: false
 AlwaysBreakTemplateDeclarations: false
 BinPackArguments: true
 BinPackParameters: true
+InsertBraces: true
 BraceWrapping:
   AfterClass: false
   AfterControlStatement: false

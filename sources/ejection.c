@@ -5,15 +5,18 @@
  * Scalable PostgreSQL connection pooler.
  */
 
-#include <kiwi.h>
-#include <machinarium.h>
 #include <odyssey.h>
+
+#include <machinarium/machinarium.h>
+
+#include <ejection.h>
+#include <od_memory.h>
 
 od_retcode_t od_conn_eject_info_init(od_conn_eject_info **info)
 {
-	*info = (od_conn_eject_info *)malloc(sizeof(od_conn_eject_info));
+	*info = (od_conn_eject_info *)od_malloc(sizeof(od_conn_eject_info));
 	if (*info == NULL) {
-		/* TODO: set errno propely */
+		/* TODO: set errno properly */
 
 		return NOT_OK_RESPONSE;
 	}
@@ -26,7 +29,7 @@ od_retcode_t od_conn_eject_info_init(od_conn_eject_info **info)
 od_retcode_t od_conn_eject_info_free(od_conn_eject_info *info)
 {
 	pthread_mutex_destroy(&info->mu);
-	free(info);
+	od_free(info);
 
 	return OK_RESPONSE;
 }
