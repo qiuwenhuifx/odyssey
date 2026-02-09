@@ -1,0 +1,44 @@
+services:
+  primary:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_HOST_AUTH_METHOD=trust
+      - POSTGRES_DB=postgres
+    networks:
+      - od_oom_test
+    healthcheck:
+      test: 'pg_isready -U postgres --dbname=postgres'
+      interval: 1s
+      timeout: 1s
+      retries: 3
+
+  odyssey:
+    image: odyssey
+    environment:
+      - PG_HOST=primary
+      - LOG_CONFIG=yes
+      - USER_AUTH_TYPE=none
+      - RUN_MODE=test
+    networks:
+      - od_oom_test
+    volumes:
+      - ./odyssey.conf:/etc/odyssey/odyssey.conf
+    depends_on:
+      - primary
+    privileged: true
+    pid: "container:postgres"
+  
+  runner:
+    build:
+      dockerfile: ./test/oom/Dockerfile
+      context: ../../ # odyssey root dir
+    networks:
+      - od_oom_test
+    depends_on:
+      - odyssey
+
+networks:
+  od_oom_test:
+    driver: bridge

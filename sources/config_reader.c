@@ -57,8 +57,11 @@ typedef enum {
 	OD_LLOCKS_DIR,
 	OD_LENABLE_ONLINE_RESTART,
 	OD_LAVAILABILITY_ZONE,
+	OD_LCONN_DROP_OPTIONS,
 	OD_LONLINE_RESTART_DROP_OPTIONS,
 	OD_LONLINE_RESTART_DROP_ENABLED,
+	OD_LINTERVAL_MS,
+	OD_LRATE,
 	OD_LGRACEFUL_DIE_ON_ERRORS,
 	OD_LGRACEFUL_SHUTDOWN_TIMEOUT_MS,
 	OD_LBINDWITH_REUSEPORT,
@@ -72,6 +75,7 @@ typedef enum {
 	OD_LTARGET_SESSION_ATTRS,
 	OD_LBACKLOG,
 	OD_LNODELAY,
+	OD_LDISABLE_NOLINGER,
 	OD_LKEEPALIVE,
 	OD_LKEEPALIVE_INTERVAL,
 	OD_LKEEPALIVE_PROBES,
@@ -80,6 +84,7 @@ typedef enum {
 	OD_LWORKERS,
 	OD_LRESOLVERS,
 	OD_LPIPELINE,
+	OD_LSMART_SEARCH_PATH_ENQUOTING,
 	OD_LPACKET_READ_SIZE,
 	OD_LPACKET_WRITE_QUEUE,
 	OD_LCACHE,
@@ -216,9 +221,12 @@ static od_keyword_t od_config_keywords[] = {
 		   OD_LGRACEFUL_SHUTDOWN_TIMEOUT_MS),
 	od_keyword("bindwith_reuseport", OD_LBINDWITH_REUSEPORT),
 
+	od_keyword("conn_drop_options", OD_LCONN_DROP_OPTIONS),
 	od_keyword("online_restart_drop_options",
 		   OD_LONLINE_RESTART_DROP_OPTIONS),
 	od_keyword("drop_enabled", OD_LONLINE_RESTART_DROP_ENABLED),
+	od_keyword("rate", OD_LRATE),
+	od_keyword("interval_ms", OD_LINTERVAL_MS),
 
 	od_keyword("enable_host_watcher", OD_LENABLE_HOST_WATCHER),
 
@@ -235,6 +243,8 @@ static od_keyword_t od_config_keywords[] = {
 	od_keyword("log_syslog_ident", OD_LLOG_SYSLOG_IDENT),
 	od_keyword("log_syslog_facility", OD_LLOG_SYSLOG_FACILITY),
 	od_keyword("stats_interval", OD_LSTATS_INTERVAL),
+	od_keyword("smart_search_path_enquoting",
+		   OD_LSMART_SEARCH_PATH_ENQUOTING),
 
 	/* Prometheus */
 	od_keyword("log_general_stats_prom", OD_LLOG_GENERAL_STATS_PROM),
@@ -249,6 +259,7 @@ static od_keyword_t od_config_keywords[] = {
 	od_keyword("target_session_attrs", OD_LTARGET_SESSION_ATTRS),
 	od_keyword("backlog", OD_LBACKLOG),
 	od_keyword("nodelay", OD_LNODELAY),
+	od_keyword("disable_nolinger", OD_LDISABLE_NOLINGER),
 
 	/* TCP keepalive */
 	od_keyword("keepalive", OD_LKEEPALIVE),
@@ -950,39 +961,83 @@ static int od_config_reader_soft_oom_options(od_config_reader_t *reader)
 	return NOT_OK_RESPONSE;
 }
 
-static int
-od_config_reader_online_restart_drop_options(od_config_reader_t *reader)
+static int od_config_reader_conn_drop_options(od_config_reader_t *reader)
 {
 	od_config_t *config = reader->config;
-	od_config_online_restart_drop_options_t *opts =
-		&config->online_restart_drop_options;
+	od_config_conn_drop_options_t *opts = &config->conn_drop_options;
 
 	if (!od_config_reader_symbol(reader, '{')) {
 		return NOT_OK_RESPONSE;
 	}
 
-	od_token_t token;
-	if (od_parser_next(&reader->parser, &token) != OD_PARSER_KEYWORD) {
-		od_config_reader_error(reader, &token, "expected keyword");
-		return NOT_OK_RESPONSE;
+	while (1) {
+		od_token_t token;
+		int rc;
+		rc = od_parser_next(&reader->parser, &token);
+		switch (rc) {
+		case OD_PARSER_KEYWORD:
+			break;
+		case OD_PARSER_EOF:
+			od_config_reader_error(reader, &token,
+					       "unexpected end of config file");
+			return NOT_OK_RESPONSE;
+		case OD_PARSER_SYMBOL:
+			/* } */
+			if (token.value.num == '}') {
+				return OK_RESPONSE;
+			}
+			/* fall through */
+		default:
+			od_config_reader_error(
+				reader, &token,
+				"incorrect or unexpected parameter of type %d",
+				rc);
+			return NOT_OK_RESPONSE;
+		}
+
+		od_keyword_t *keyword;
+		keyword = od_keyword_match(od_config_keywords, &token);
+		if (keyword == NULL) {
+			od_config_reader_error(reader, &token,
+					       "unknown parameter");
+			return NOT_OK_RESPONSE;
+		}
+		switch (keyword->id) {
+		/* limit */
+		case OD_LONLINE_RESTART_DROP_ENABLED:
+			if (!od_config_reader_yes_no(reader,
+						     &opts->drop_enabled)) {
+				return NOT_OK_RESPONSE;
+			}
+			continue;
+		/* rate */
+		case OD_LRATE:
+			if (!od_config_reader_number(reader, &opts->rate)) {
+				return NOT_OK_RESPONSE;
+			}
+			continue;
+		/* interval_ms */
+		case OD_LINTERVAL_MS:
+			if (!od_config_reader_number(reader,
+						     &opts->interval_ms)) {
+				return NOT_OK_RESPONSE;
+			}
+			if (opts->interval_ms <= 0) {
+				od_config_reader_error(
+					reader, &token,
+					"interval for conn drop options must be positive");
+				return NOT_OK_RESPONSE;
+			}
+			continue;
+		default:
+			od_config_reader_error(reader, &token,
+					       "unexpected keyword");
+			return NOT_OK_RESPONSE;
+		}
 	}
 
-	od_keyword_t *keyword;
-	keyword = od_keyword_match(od_config_keywords, &token);
-	if (keyword == NULL || keyword->id != OD_LONLINE_RESTART_DROP_ENABLED) {
-		od_config_reader_error(reader, &token, "unexpected keyword");
-		return NOT_OK_RESPONSE;
-	}
-
-	if (!od_config_reader_yes_no(reader, &opts->drop_enabled)) {
-		return NOT_OK_RESPONSE;
-	}
-
-	if (!od_config_reader_symbol(reader, '}')) {
-		return NOT_OK_RESPONSE;
-	}
-
-	return OK_RESPONSE;
+	od_unreachable();
+	return NOT_OK_RESPONSE;
 }
 
 static int od_config_reader_listen(od_config_reader_t *reader)
@@ -1499,6 +1554,8 @@ od_config_reader_ldap_storage_credentials(od_config_reader_t *reader,
 
 	od_rule_ldap_storage_credentials_add(rule, lsc_current);
 
+	od_ldap_storage_credentials_free(lsc_current);
+
 	/* { */
 	if (!od_config_reader_symbol(reader, '{')) {
 		goto error;
@@ -1649,14 +1706,6 @@ static int od_config_reader_rule_settings(od_config_reader_t *reader,
 			if (!od_config_reader_string(reader, &rule->auth)) {
 				return NOT_OK_RESPONSE;
 			}
-#ifndef POSTGRESQL_FOUND
-			if (strcmp(rule->auth, "scram-sha-256") == 0) {
-				od_config_reader_error(
-					reader, &token,
-					"SCRAM auth is not supported in this build, try to recompile");
-				return NOT_OK_RESPONSE;
-			}
-#endif
 			break;
 		/* auth_common_name */
 		case OD_LAUTH_COMMON_NAME: {
@@ -2024,7 +2073,7 @@ static int od_config_reader_rule_settings(od_config_reader_t *reader,
 					rule->ldap_endpoint_name);
 				return NOT_OK_RESPONSE;
 			}
-			rule->ldap_endpoint = le;
+			rule->ldap_endpoint = od_ldap_endpoint_ref(le);
 			continue;
 #else
 			od_config_reader_error(
@@ -2459,8 +2508,8 @@ static int od_config_reader_group(od_config_reader_t *reader, char *db_name,
 	od_free(group_name);
 
 	/* force several settings */
-	group->storage_db = rule->storage_db;
-	group->storage_user = rule->storage_user;
+	group->storage_db = strdup(rule->storage_db);
+	group->storage_user = strdup(rule->storage_user);
 	rule->pool->routing = OD_RULE_POOL_CLIENT_VISIBLE;
 	rule->users_in_group = 0;
 	rule->user_names = NULL;
@@ -2969,7 +3018,7 @@ static int od_config_reader_parse(od_config_reader_t *reader,
 			if (strlen(val) > OD_MAX_AVAILABILITY_ZONE_LENGTH - 1) {
 				od_config_reader_error(
 					reader, &token,
-					"availaility zone name is too large");
+					"availability zone name is too large");
 				goto error;
 			}
 			strcpy(config->availability_zone, val);
@@ -2982,10 +3031,16 @@ static int od_config_reader_parse(od_config_reader_t *reader,
 				goto error;
 			}
 			continue;
-		/* online_restart_drop_options */
+		/*
+		 * online_restart_drop_options
+		 * conn_drop_options
+		 * 
+		 * this are sinonimous, for backward capitibility
+		 */
 		case OD_LONLINE_RESTART_DROP_OPTIONS:
-			rc = od_config_reader_online_restart_drop_options(
-				reader);
+			/* fallthrough */
+		case OD_LCONN_DROP_OPTIONS:
+			rc = od_config_reader_conn_drop_options(reader);
 			if (rc != OK_RESPONSE) {
 				goto error;
 			}
@@ -3002,6 +3057,12 @@ static int od_config_reader_parse(od_config_reader_t *reader,
 			if (!od_config_reader_number(
 				    reader,
 				    &config->graceful_shutdown_timeout_ms)) {
+				goto error;
+			}
+			if (config->graceful_shutdown_timeout_ms < 0) {
+				od_config_reader_error(
+					reader, &token,
+					"graceful shutdown timeout must be non-negative");
 				goto error;
 			}
 			continue;
@@ -3110,6 +3171,14 @@ static int od_config_reader_parse(od_config_reader_t *reader,
 			}
 
 			continue;
+		/* smart_search_path_enquoting */
+		case OD_LSMART_SEARCH_PATH_ENQUOTING:
+			if (!od_config_reader_yes_no(
+				    reader,
+				    &config->smart_search_path_enquoting)) {
+				goto error;
+			}
+			continue;
 		/* client_max */
 		case OD_LCLIENT_MAX:
 			if (!od_config_reader_number(reader,
@@ -3143,6 +3212,13 @@ static int od_config_reader_parse(od_config_reader_t *reader,
 		case OD_LNODELAY:
 			if (!od_config_reader_yes_no(reader,
 						     &config->nodelay)) {
+				goto error;
+			}
+			continue;
+		/* disable_nolinger */
+		case OD_LDISABLE_NOLINGER:
+			if (!od_config_reader_yes_no(
+				    reader, &config->disable_nolinger)) {
 				goto error;
 			}
 			continue;

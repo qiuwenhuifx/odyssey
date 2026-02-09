@@ -267,6 +267,21 @@ MACHINE_API int machine_set_nodelay(machine_io_t *obj, int enable)
 	return 0;
 }
 
+MACHINE_API int machine_set_nolinger(machine_io_t *obj)
+{
+	mm_io_t *io = mm_cast(mm_io_t *, obj);
+	mm_errno_set(0);
+
+	int rc;
+	rc = mm_socket_set_nolinger(io->fd);
+	if (rc == -1) {
+		mm_errno_set(errno);
+		return -1;
+	}
+
+	return 0;
+}
+
 MACHINE_API int machine_set_keepalive(machine_io_t *obj, int enable, int delay,
 				      int interval, int probes, int usr_timeout)
 {
@@ -353,16 +368,6 @@ int mm_io_socket_set(mm_io_t *io, int fd)
 		mm_errno_set(errno);
 		return -1;
 	}
-	rc = mm_socket_set_nonblock(io->fd, 1);
-	if (rc == -1) {
-		mm_errno_set(errno);
-		return -1;
-	}
-	rc = mm_socket_set_cloexec(io->fd, 1 /* enable */);
-	if (rc == -1) {
-		mm_errno_set(errno);
-		return -1;
-	}
 	if (!io->is_unix_socket) {
 		if (io->opt_nodelay) {
 			rc = mm_socket_set_nodelay(io->fd, 1);
@@ -393,7 +398,7 @@ int mm_io_socket(mm_io_t *io, struct sockaddr *sa)
 		io->is_unix_socket = 1;
 	}
 	int fd;
-	fd = mm_socket(sa->sa_family, SOCK_STREAM, 0);
+	fd = mm_socket(sa->sa_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (fd == -1) {
 		mm_errno_set(errno);
 		return -1;

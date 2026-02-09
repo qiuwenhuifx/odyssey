@@ -30,6 +30,37 @@
 #include <extension.h>
 #include <od_error.h>
 
+static inline void fill_supported_features_string(char *out, size_t max)
+{
+	char *end = out + max;
+
+	memset(out, 0, max);
+
+#ifdef PAM_FOUND
+	out += od_snprintf(out, end - out, " +pam");
+#else
+	out += od_snprintf(out, end - out, " -pam");
+#endif
+
+#ifdef LDAP_FOUND
+	out += od_snprintf(out, end - out, " +ldap");
+#else
+	out += od_snprintf(out, end - out, " -ldap");
+#endif
+
+#ifdef HAVE_SYSTEMD
+	out += od_snprintf(out, end - out, " +systemd");
+#else
+	out += od_snprintf(out, end - out, " -systemd");
+#endif
+
+#if defined(PROM_FOUND) && defined(PROM_HTTP_FOUND)
+	out += od_snprintf(out, end - out, " +prom");
+#else
+	out += od_snprintf(out, end - out, " -prom");
+#endif
+}
+
 static inline void free_cmdline(od_instance_t *instance)
 {
 	if (instance->cmdline.envp != NULL) {
@@ -52,7 +83,7 @@ static inline void free_cmdline(od_instance_t *instance)
 	instance->cmdline.argc = 0;
 }
 
-od_instance_t *od_instance_create()
+od_instance_t *od_instance_create(void)
 {
 	od_instance_t *instance = od_malloc(sizeof(od_instance_t));
 	if (instance == NULL) {
@@ -65,7 +96,8 @@ od_instance_t *od_instance_create()
 	od_config_init(&instance->config);
 
 	instance->config_file = NULL;
-	instance->shutdown_worker_id = INVALID_COROUTINE_ID;
+
+	atomic_store(&instance->shutdown_worker_id, INVALID_COROUTINE_ID);
 
 	instance->cmdline.argc = 0;
 	instance->cmdline.argv = NULL;
@@ -88,7 +120,8 @@ void od_instance_free(od_instance_t *instance)
 {
 	free_cmdline(instance);
 
-	if (instance->config.pid_file) {
+	if (instance->config.pid_file &&
+	    od_pid_restart_new_get(&instance->pid) == -1) {
 		od_pid_unlink(&instance->pid, instance->config.pid_file);
 	}
 	od_config_free(&instance->config);
@@ -97,13 +130,14 @@ void od_instance_free(od_instance_t *instance)
 	od_free(instance->exec_path);
 	od_logger_close(&instance->logger);
 	machinarium_free();
+
 	od_free(instance);
 }
 
 void od_usage(od_instance_t *instance, char *path)
 {
-	od_log(&instance->logger, "init", NULL, NULL, "odyssey (git: %s %s)",
-	       OD_VERSION_GIT, OD_VERSION_BUILD);
+	od_log(&instance->logger, "init", NULL, NULL, "odyssey %s",
+	       ODYSSEY_VERSION_FULL);
 	od_log(&instance->logger, "init", NULL, NULL, "usage: %s <config_file>",
 	       path);
 }
@@ -158,11 +192,21 @@ error:
 	return 1;
 }
 
-static inline void od_bind_version()
+static inline void od_bind_version(void)
 {
+	char features[128];
+	fill_supported_features_string(features, sizeof(features));
+
+#ifdef ODYSSEY_VERSION_GIT
 	od_asprintf((char **__restrict)&argp_program_version,
-		    "odyssey (git: %s %s %s)", OD_VERSION_NUMBER,
-		    OD_VERSION_GIT, OD_VERSION_BUILD);
+		    "odyssey %s (git %s) %s%s\ncompiled by %s",
+		    ODYSSEY_VERSION_NUMBER, ODYSSEY_VERSION_GIT,
+		    ODYSSEY_BUILD_TYPE, features, ODYSSEY_COMPILER_STRING);
+#else
+	od_asprintf((char **__restrict)&argp_program_version,
+		    "odyssey %s %s%s\ncompiled by %s", ODYSSEY_VERSION_NUMBER,
+		    ODYSSEY_BUILD_TYPE, features, ODYSSEY_COMPILER_STRING);
+#endif
 }
 
 static inline od_retcode_t od_args_init(od_arguments_t *args,
@@ -417,8 +461,18 @@ int od_instance_main(od_instance_t *instance, int argc, char **argv,
 				      instance->config.log_syslog_ident,
 				      instance->config.log_syslog_facility);
 	}
-	od_log(&instance->logger, "init", NULL, NULL, "odyssey (git: %s %s)",
-	       OD_VERSION_GIT, OD_VERSION_BUILD);
+
+	char features[128];
+	fill_supported_features_string(features, sizeof(features));
+
+#ifdef ODYSSEY_VERSION_GIT
+	od_log(&instance->logger, "init", NULL, NULL,
+	       "odyssey %s (git: %s) %s%s", ODYSSEY_VERSION_NUMBER,
+	       ODYSSEY_VERSION_GIT, ODYSSEY_BUILD_TYPE, features);
+#else
+	od_log(&instance->logger, "init", NULL, NULL, "odyssey %s %s%s",
+	       ODYSSEY_VERSION_NUMBER, ODYSSEY_BUILD_TYPE, features);
+#endif
 	od_log(&instance->logger, "init", NULL, NULL, "");
 
 	/* print configuration */
@@ -492,8 +546,6 @@ int od_instance_main(od_instance_t *instance, int argc, char **argv,
 
 	rc = machine_wait(system->machine);
 
-	od_soft_oom_stop_checker(&global->soft_oom);
-
 	return rc;
 
 error:
@@ -501,4 +553,14 @@ error:
 	od_extension_free(&instance->logger, extensions);
 	od_system_free(system);
 	return NOT_OK_RESPONSE;
+}
+
+void od_instance_set_shutdown_worker_id(od_instance_t *instance, int64_t id)
+{
+	atomic_store(&instance->shutdown_worker_id, id);
+}
+
+int64_t od_instance_get_shutdown_worker_id(od_instance_t *instance)
+{
+	return atomic_load(&instance->shutdown_worker_id);
 }

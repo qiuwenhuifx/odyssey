@@ -34,6 +34,8 @@
 #include <compression.h>
 #include <extension.h>
 #include <deploy.h>
+#include <router_cancel.h>
+#include <server.h>
 #include <debugprintf.h>
 
 static inline void od_frontend_close(od_client_t *client)
@@ -79,7 +81,23 @@ int od_frontend_fatal(od_client_t *client, char *code, char *fmt, ...)
 	va_list args;
 	va_start(args, fmt);
 	machine_msg_t *msg;
-	msg = od_frontend_fatal_msg(client, NULL, code, fmt, args);
+	msg = od_frontend_fatal_msg(client, NULL, code, "", "", fmt, args);
+	va_end(args);
+	if (msg == NULL) {
+		return -1;
+	}
+	return od_write(&client->io, msg);
+}
+
+int od_frontend_fatal_detailed(od_client_t *client, const char *code,
+			       const char *detail, const char *hint,
+			       const char *fmt, ...)
+{
+	va_list args;
+	va_start(args, fmt);
+	machine_msg_t *msg;
+	msg = od_frontend_fatal_msg(client, NULL, code, detail, hint, fmt,
+				    args);
 	va_end(args);
 	if (msg == NULL) {
 		return -1;
@@ -221,8 +239,9 @@ static int od_frontend_startup(od_client_t *client)
 	return 0;
 
 error:
-	od_debug(&instance->logger, "startup", client, NULL,
-		 "startup packet read error");
+	od_log(&instance->logger, "startup", client, NULL,
+	       "startup packet read error, errno = %d (%s)", machine_errno(),
+	       strerror(machine_errno()));
 	od_cron_t *cron = client->global->cron;
 	od_atomic_u64_inc(&cron->startup_errors);
 	return -1;
@@ -435,7 +454,27 @@ od_frontend_attach(od_client_t *client, char *context,
 	for (size_t i = 0; i < storage->endpoints_count; ++i) {
 		od_storage_endpoint_t *endpoint = candidates[i].endpoint;
 
+		char addr[256];
+		od_address_to_str(&endpoint->address, addr, sizeof(addr) - 1);
+
+		od_debug(&instance->logger, context, client, NULL,
+			 "trying to attach to %s...", addr);
+
 		if (candidates[i].priority >= 0) {
+			/*
+			 * if client is attached now - previous attach failed
+			 * but the server is still in active state and attached to client
+			 *
+			 * so now need to detach the server from the client,
+			 * servers stays attached to client in case of error
+			 * to have an ability to perform error forwarding
+			 *
+			 * TODO: fix this way of forwarding the error
+			 */
+			if (client->server != NULL) {
+				od_router_close(client->global->router, client);
+			}
+
 			status = od_frontend_attach_to_endpoint(
 				client, context, route_params, endpoint, tsa);
 		} else {
@@ -446,9 +485,6 @@ od_frontend_attach(od_client_t *client, char *context,
 		if (status == OD_OK) {
 			return status;
 		}
-
-		char addr[256];
-		od_address_to_str(&endpoint->address, addr, sizeof(addr) - 1);
 
 		od_debug(&instance->logger, context, client, NULL,
 			 "attach to %s failed with status: %s", addr,
@@ -505,8 +541,7 @@ static inline od_frontend_status_t od_frontend_setup_params(od_client_t *client)
 			return status;
 		}
 
-		/* close backend connection */
-		od_router_close(router, client);
+		od_router_detach(router, client);
 
 		/* There is possible race here, so we will discard our
 		 * attempt if params are already set */
@@ -639,9 +674,13 @@ static inline od_frontend_status_t od_frontend_local_setup(od_client_t *client)
 	char data[128];
 	int data_len;
 	/* current version and build */
+#ifdef ODYSSEY_VERSION_GIT
+	data_len = od_snprintf(data, sizeof(data), "%s (git %s)",
+			       ODYSSEY_VERSION_NUMBER, ODYSSEY_VERSION_GIT);
+#else
 	data_len =
-		od_snprintf(data, sizeof(data), "%s-%s-%s", OD_VERSION_NUMBER,
-			    OD_VERSION_GIT, OD_VERSION_BUILD);
+		od_snprintf(data, sizeof(data), "%s", ODYSSEY_VERSION_NUMBER);
+#endif
 	msg = kiwi_be_write_parameter_status(stream, "server_version", 15, data,
 					     data_len + 1);
 	if (msg == NULL) {
@@ -689,18 +728,20 @@ static inline bool od_eject_conn_with_rate(od_client_t *client,
 {
 	od_config_t *config = &instance->config;
 
-	if (!config->online_restart_drop_options.drop_enabled) {
+	if (!config->conn_drop_options.drop_enabled) {
 		return false;
 	}
 
-	if (server == NULL) {
-		/* server is null - client was never attached to any server so its ok to eject this conn  */
+	if (server == NULL &&
+	    client->rule->pool->pool_type == OD_RULE_POOL_SESSION) {
+		od_log(&instance->logger, "shutdown", client, server,
+		       "drop client because it was never attached to server");
 		return true;
 	}
 	od_thread_global **gl = od_thread_global_get();
 	if (gl == NULL) {
 		od_log(&instance->logger, "shutdown", client, server,
-		       "drop client connection on restart, unable to throttle (wid %d)",
+		       "drop client connection on graceful shutdown, unable to throttle (wid %d)",
 		       (*gl)->wid);
 		/* this is clearly something bad, TODO: handle properly */
 		return true;
@@ -708,27 +749,19 @@ static inline bool od_eject_conn_with_rate(od_client_t *client,
 
 	od_conn_eject_info *info = (*gl)->info;
 
-	uint32_t now_sec = machine_timeofday_sec();
+	uint64_t now_ms = machine_time_ms();
 	bool res = false;
 
-	pthread_mutex_lock(&info->mu);
-	{
-		if (info->last_conn_drop_ts + 1 < now_sec) {
-			res = true;
+	if (od_conn_eject_info_try(info, now_ms)) {
+		res = true;
 
-			od_log(&instance->logger, "shutdown", client, server,
-			       "drop client connection on restart (wid %d, last eject %d, curr time %d)",
-			       (*gl)->wid, info->last_conn_drop_ts, now_sec);
-
-			info->last_conn_drop_ts = now_sec;
-		} else {
-			od_debug(
-				&instance->logger, "shutdown", client, server,
-				"delay drop client connection on restart, last drop was too recent (wid %d, last drop %d, curr time %d)",
-				(*gl)->wid, info->last_conn_drop_ts, now_sec);
-		}
+		od_log(&instance->logger, "shutdown", client, server,
+		       "drop client connection on graceful shutdown");
+	} else {
+		od_debug(
+			&instance->logger, "shutdown", client, server,
+			"delay drop client connection on graceful shutdown, rate limited");
 	}
-	pthread_mutex_unlock(&info->mu);
 
 	return res;
 }
@@ -766,7 +799,9 @@ od_process_drop_on_restart(od_client_t *client)
 	od_instance_t *instance = client->global->instance;
 	od_server_t *server = client->server;
 
-	if (od_likely(instance->shutdown_worker_id == INVALID_COROUTINE_ID)) {
+	int64_t shut_worker_id = od_instance_get_shutdown_worker_id(instance);
+
+	if (od_likely(shut_worker_id == INVALID_COROUTINE_ID)) {
 		/* try to optimize likely path */
 		return OD_OK;
 	}
@@ -774,12 +809,12 @@ od_process_drop_on_restart(od_client_t *client)
 	if (od_unlikely(client->rule->storage->storage_type ==
 			OD_RULE_STORAGE_LOCAL)) {
 		/* local server is not very important (db like console, pgbouncer used for stats) */
-		return OD_ECLIENT_READ;
+		return OD_EGRACEFUL_SHUTDOWN;
 	}
 
 	if (od_unlikely(server == NULL)) {
 		if (od_eject_conn_with_rate(client, server, instance)) {
-			return OD_ECLIENT_READ;
+			return OD_EGRACEFUL_SHUTDOWN;
 		}
 		return OD_OK;
 	}
@@ -793,7 +828,7 @@ od_process_drop_on_restart(od_client_t *client)
 
 	if (od_unlikely(!server->is_transaction)) {
 		if (od_eject_conn_with_rate(client, server, instance)) {
-			return OD_ECLIENT_READ;
+			return OD_EGRACEFUL_SHUTDOWN;
 		}
 		return OD_OK;
 	}
@@ -1089,7 +1124,10 @@ od_frontend_remote_server_handle_packet(od_relay_t *relay, char *data, int size)
 	case KIWI_BE_ERROR_RESPONSE:
 
 		if (od_server_in_sync_point(server)) {
-			server->sync_point_deploy_msg = NULL;
+			if (server->sync_point_deploy_msg != NULL) {
+				machine_msg_free(server->sync_point_deploy_msg);
+				server->sync_point_deploy_msg = NULL;
+			}
 		}
 		od_backend_error(server, "main", data, size);
 		break;
@@ -2230,7 +2268,7 @@ od_frontend_check_replica_catchup(od_instance_t *instance, od_client_t *client)
 static int wait_client_activity(od_client_t *client)
 {
 	/* io_cond is set up by client or server relay */
-	if (machine_cond_wait(client->io_cond, 10 * 1000 /* 10 sec */) == 0) {
+	if (machine_cond_wait(client->io_cond, 1000 /* 1 sec */) == 0) {
 		client->time_last_active = machine_time_us();
 		od_dbg_printf_on_dvl_lvl(
 			1, "change client last active time %lld\n",
@@ -2562,8 +2600,9 @@ static void od_frontend_cleanup(od_client_t *client, char *context,
 		/* graceful disconnect or kill */
 		if (instance->config.log_session) {
 			od_log(&instance->logger, context, client, server,
-			       "client disconnected (route %s.%s)",
-			       route->rule->db_name, route->rule->user_name);
+			       "client disconnected (route %s.%s, working time: %lldus)",
+			       route->rule->db_name, route->rule->user_name,
+			       machine_time_us() - client->time_accept);
 		}
 		if (!client->server) {
 			break;
@@ -2620,6 +2659,20 @@ static void od_frontend_cleanup(od_client_t *client, char *context,
 			client->startup.user.value);
 		break;
 
+	case OD_EGRACEFUL_SHUTDOWN:
+		if (od_global_get_instance()->pid.restart_new_pid != -1) {
+			od_frontend_fatal_detailed(
+				client, KIWI_CONNECTION_FAILURE,
+				"The Odyssey instance is performing online restart to update configuration or binary, and the connections are being drained",
+				"Try to reconnect",
+				"Odyssey is gracefully shutting down");
+		} else {
+			od_frontend_fatal_detailed(
+				client, KIWI_CONNECTION_FAILURE,
+				"The Odyssey instance is gracefully shutting down, and the connections are being drained",
+				"", "Odyssey is gracefully shutting down");
+		}
+		/* fallthrough */
 	case OD_ECLIENT_READ:
 		/*fallthrough*/
 	case OD_ECLIENT_WRITE:
@@ -2628,9 +2681,10 @@ static void od_frontend_cleanup(od_client_t *client, char *context,
 
 		od_getpeername(client->io.io, peer, sizeof(peer), 1, 1);
 		od_log(&instance->logger, context, client, server,
-		       "client disconnected (read/write error, addr %s): %s, status %s",
+		       "client disconnected (read/write error, addr %s): %s, status %s, working time %lldus",
 		       peer, od_io_error(&client->io),
-		       od_frontend_status_to_str(status));
+		       od_frontend_status_to_str(status),
+		       machine_time_us() - client->time_accept);
 		if (!client->server) {
 			break;
 		}
@@ -2795,8 +2849,21 @@ void od_frontend(void *arg)
 		od_router_cancel_init(&cancel);
 		rc = od_router_cancel(router, &client->startup.key, &cancel);
 		if (rc == 0) {
+			/*
+			 * server might be free during cancel end
+			 * so need to preserve it route ptr
+			 */
+			od_route_t *srv_route = cancel.server->route;
+
 			od_cancel(client->global, cancel.storage,
 				  cancel.address, &cancel.key, &cancel.id);
+
+			od_route_lock(srv_route);
+			od_server_cancel_end(cancel.server);
+			od_route_unlock(srv_route);
+			/* signal about possible free connection */
+			od_route_signal(srv_route);
+
 			od_router_cancel_free(&cancel);
 		}
 		od_frontend_close(client);
@@ -3000,8 +3067,7 @@ void od_frontend(void *arg)
 		od_error(&instance->logger, "startup", client, NULL,
 			 "drop connection due to soft oom (usage is %lu KB)",
 			 used_memory / 1024);
-		od_frontend_close(client);
-		return;
+		rc = NOT_OK_RESPONSE;
 	}
 
 	if (rc != OK_RESPONSE) {

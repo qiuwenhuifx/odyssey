@@ -1,0 +1,9 @@
+FROM fedora:40
+
+RUN dnf install -y cmake gcc make git openssl-devel systemd-devel 
+
+COPY . /workdir
+WORKDIR /workdir
+
+RUN make clean
+RUN make build_release

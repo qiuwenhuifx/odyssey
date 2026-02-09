@@ -1,0 +1,29 @@
+ARG codename=bookworm
+FROM debian:${codename}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Europe/Moskow
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+RUN echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
+
+RUN apt-get update -o Acquire::AllowInsecureRepositories=true && apt-get install -y --no-install-recommends --allow-unauthenticated \
+	curl lsb-release ca-certificates gnupg
+
+RUN apt-get update -o Acquire::AllowInsecureRepositories=true && apt-get install -y --no-install-recommends --allow-unauthenticated \
+    sudo \
+    git \
+    libssl-dev \
+    libldap-common \
+    openssl \
+    libpam0g-dev \
+    libldap-dev \
+    build-essential \
+    libsystemd-dev \
+    cmake \
+    devscripts debhelper
+
+COPY . /build_dir
+WORKDIR /build_dir
+
+ENTRYPOINT [ "bash", "-c", "dpkg-buildpackage -us -uc -b" ]

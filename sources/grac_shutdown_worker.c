@@ -88,11 +88,15 @@ void od_grac_shutdown_worker(void *arg)
 	od_log(&instance->logger, "config", NULL, NULL,
 	       "stop to accepting new connections");
 
-	od_setproctitlef(
-		&instance->orig_argv_ptr,
-		"odyssey: version %s stop accepting any connections and "
-		"working with old transactions",
-		OD_VERSION_NUMBER);
+#ifdef ODYSSEY_VERSION_GIT
+	od_setproctitlef(&instance->orig_argv_ptr, instance->orig_argv_ptr_len,
+			 "odyssey %s (git %s) stop accepting any connections",
+			 ODYSSEY_VERSION_NUMBER, ODYSSEY_VERSION_GIT);
+#else
+	od_setproctitlef(&instance->orig_argv_ptr, instance->orig_argv_ptr_len,
+			 "odyssey %s stop accepting any connections",
+			 ODYSSEY_VERSION_NUMBER);
+#endif
 
 	od_list_t *i;
 	od_list_foreach(&router->servers, i)
@@ -172,9 +176,6 @@ void od_grac_shutdown_worker(void *arg)
 		od_fatal(&instance->logger, "system", NULL, NULL,
 			 "failed to create a message in grac_shutdown_worker");
 	}
-
-	od_system_free(system);
-	od_global_destroy(global);
 
 	machine_msg_set_type(msg, OD_MSG_GRAC_SHUTDOWN_FINISHED);
 	machine_channel_write(channel, msg);

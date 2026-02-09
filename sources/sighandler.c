@@ -15,6 +15,7 @@
 #include <extension.h>
 #include <cron.h>
 #include <global.h>
+#include <router.h>
 #include <grac_shutdown_worker.h>
 #include <instance.h>
 #include <msg.h>
@@ -27,7 +28,8 @@ od_system_gracefully_killer_invoke(od_system_t *system,
 				   machine_channel_t *channel)
 {
 	od_instance_t *instance = system->global->instance;
-	if (instance->shutdown_worker_id != INVALID_COROUTINE_ID) {
+	int64_t shut_worker_id = od_instance_get_shutdown_worker_id(instance);
+	if (shut_worker_id != INVALID_COROUTINE_ID) {
 		return OK_RESPONSE;
 	}
 
@@ -50,32 +52,10 @@ od_system_gracefully_killer_invoke(od_system_t *system,
 		od_free(arg);
 		return NOT_OK_RESPONSE;
 	}
-	instance->shutdown_worker_id = mid;
+	od_instance_set_shutdown_worker_id(instance, mid);
 
 	return OK_RESPONSE;
 }
-
-#ifdef OD_SYSTEM_SHUTDOWN_CLEANUP
-static inline void od_system_cleanup(od_system_t *system)
-{
-	od_instance_t *instance = system->global->instance;
-	od_list_t *i;
-
-	od_list_foreach(&instance->config.listen, i)
-	{
-		od_config_listen_t *listen;
-		listen = od_container_of(i, od_config_listen_t, link);
-		if (listen->host) {
-			continue;
-		}
-		/* remove unix socket files */
-		char path[PATH_MAX];
-		od_snprintf(path, sizeof(path), "%s/.s.PGSQL.%d",
-			    instance->config.unix_socket_dir, listen->port);
-		unlink(path);
-	}
-}
-#endif
 
 typedef struct waiter_arg {
 	od_system_t *system;
@@ -116,16 +96,11 @@ static inline void od_signal_waiter(void *arg)
 
 void od_system_shutdown(od_system_t *system, od_instance_t *instance)
 {
-	od_worker_pool_t *worker_pool;
-
-	worker_pool = system->global->worker_pool;
 	od_log(&instance->logger, "system", NULL, NULL,
 	       "SIGINT received, shutting down");
 
 	/* lock here */
 	od_cron_stop(system->global->cron);
-
-	od_worker_pool_stop(worker_pool);
 
 	/* Prevent OpenSSL usage during deinitialization */
 	od_worker_pool_wait();
@@ -134,7 +109,6 @@ void od_system_shutdown(od_system_t *system, od_instance_t *instance)
 
 #ifdef OD_SYSTEM_SHUTDOWN_CLEANUP
 	od_router_free(system->global->router);
-
 	od_system_cleanup(system);
 
 	/* stop machinaruim and free */
@@ -158,6 +132,7 @@ void od_system_signal_handler(void *arg)
 	sigaddset(&mask, SIGCHLD);
 	sigaddset(&mask, OD_SIG_LOG_ROTATE);
 	sigaddset(&mask, OD_SIG_ONLINE_RESTART);
+	sigaddset(&mask, SIGWINCH);
 
 	sigset_t ignore_mask;
 	sigemptyset(&ignore_mask);
@@ -228,16 +203,39 @@ void od_system_signal_handler(void *arg)
 			 */
 			if (new_binary_pid != -1) {
 				od_systemd_notify_mainpid(new_binary_pid);
+
+				/* signal the new binary to set ready */
+				kill(new_binary_pid, SIGWINCH);
+			} else {
+				/* Notify systemd we're shutting down */
+				od_systemd_notify_stopping();
 			}
 
-			/* Notify systemd we're shutting down */
-			od_systemd_notify_stopping();
 			od_system_gracefully_killer_invoke(system, channel);
+			break;
+		case SIGWINCH:
+			/*
+			 * old binary accepted our term signal and setup MAINPID
+			 * now we must notify that we are ready
+			 */
+
+			if (instance->pid.restart_ppid == -1) {
+				online_restart_log(
+					"got unexpected SIGWINCH, ignored");
+				break;
+			}
+
+			od_systemd_notify_ready();
 			break;
 		case SIGHUP:
 			od_log(&instance->logger, "system", NULL, NULL,
 			       "SIGHUP received");
-			od_systemd_notify_reloading();
+			if (new_binary_pid != -1) {
+				od_log(&instance->logger, "system", NULL, NULL,
+				       "performing online restart now, SIGHUP is ignored");
+				break;
+			}
+			od_systemd_notify_reloading("Reloading configuration");
 			od_system_config_reload(system);
 			od_systemd_notify_ready();
 			break;
@@ -281,11 +279,19 @@ void od_system_signal_handler(void *arg)
 				break;
 			}
 
+			od_systemd_notify_reloading(
+				"Graceful restart on new binary");
+
 			new_binary_pid = od_restart_run_new_binary();
 			if (new_binary_pid != -1) {
 				online_restart_log("new binary pid = %d",
 						   new_binary_pid);
+
+				od_global_get_instance()->pid.restart_new_pid =
+					new_binary_pid;
 			} else {
+				/* notify ready because no one else will - the child didnt start */
+				od_systemd_notify_ready();
 				online_restart_error(
 					"running new binary failed - keep use old instance");
 			}
@@ -312,6 +318,9 @@ void od_system_signal_handler(void *arg)
 				break;
 			}
 
+			/* notify ready because no one else will - the child crashed */
+			od_systemd_notify_ready();
+
 			if (WIFEXITED(wstatus)) {
 				online_restart_error(
 					"new binary exited(%d) - keep use old binary instance",
@@ -329,17 +338,12 @@ void od_system_signal_handler(void *arg)
 		}
 	}
 
-	machine_wait(instance->shutdown_worker_id);
+	od_soft_oom_stop_checker(&od_global_get()->soft_oom);
+
+	machine_wait(od_instance_get_shutdown_worker_id(instance));
 
 	machine_cancel(sigwaiter_id);
 	machine_join(sigwaiter_id);
 
 	machine_channel_free(channel);
-
-	od_logger_shutdown(&instance->logger);
-	od_logger_wait_finish(&instance->logger);
-
-	od_instance_free(instance);
-
-	exit(0);
 }

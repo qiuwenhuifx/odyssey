@@ -24,7 +24,7 @@ int mm_socket(int domain, int type, int protocol)
 {
 	/* get and return file descriptor of env socket */
 	int fd;
-	fd = socket(domain, type, protocol);
+	fd = socket(domain, type | SOCK_CLOEXEC, protocol);
 	return fd;
 }
 
@@ -49,21 +49,6 @@ int mm_socket_set_nonblock(int fd, int enable)
 	int rc;
 	rc = fcntl(fd, F_SETFL, flags);
 	return rc;
-}
-
-int mm_socket_set_cloexec(int fd, int enable)
-{
-	int flags = fcntl(fd, F_GETFL, 0);
-	if (flags == -1) {
-		return -1;
-	}
-	if (enable) {
-		flags |= FD_CLOEXEC;
-	} else {
-		flags &= ~FD_CLOEXEC;
-	}
-
-	return fcntl(fd, F_SETFL, flags);
 }
 
 int mm_socket_set_nodelay(int fd, int enable)
@@ -161,6 +146,14 @@ int mm_socket_set_reuseport(int fd, int enable)
 	return rc;
 }
 
+int mm_socket_set_nolinger(int fd)
+{
+	int rc;
+	struct linger linger = { .l_linger = 0, .l_onoff = 1 };
+	rc = setsockopt(fd, SOL_SOCKET, SO_LINGER, &linger, sizeof(linger));
+	return rc;
+}
+
 int mm_socket_set_ipv6only(int fd, int enable)
 {
 	int rc;
@@ -226,7 +219,7 @@ int mm_socket_listen(int fd, int backlog)
 int mm_socket_accept(int fd, struct sockaddr *sa, socklen_t *slen)
 {
 	int rc;
-	rc = accept(fd, sa, slen);
+	rc = accept4(fd, sa, slen, SOCK_CLOEXEC | SOCK_NONBLOCK);
 	return rc;
 }
 

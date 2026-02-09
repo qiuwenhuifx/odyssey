@@ -21,6 +21,7 @@ typedef enum {
 	KIWI_VAR_COMPRESSION,
 	KIWI_VAR_SEARCH_PATH,
 	KIWI_VAR_STATEMENT_TIMEOUT,
+	KIWI_VAR_WORK_MEM,
 	KIWI_VAR_LOCK_TIMEOUT,
 	KIWI_VAR_IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
 	KIWI_VAR_DEFAULT_TABLE_ACCESS_METHOD,
@@ -33,12 +34,16 @@ typedef enum {
 	KIWI_VAR_TRANSACTION_READ_ONLY,
 	KIWI_VAR_IDLE_SESSION_TIMEOUT,
 	KIWI_VAR_IS_HOT_STANDBY,
+	KIWI_VAR_ROLE,
+
 	/* greenplum */
 	KIWI_VAR_GP_SESSION_ROLE,
+
 	/* odyssey own params */
 	KIWI_VAR_ODYSSEY_CATCHUP_TIMEOUT,
 	KIWI_VAR_ODYSSEY_TARGET_SESSION_ATTRS,
-	KIWI_VAR_ROLE,
+
+	/* always keep this at end */
 	KIWI_VAR_MAX,
 	KIWI_VAR_UNDEF
 } kiwi_var_type_t;
@@ -71,7 +76,7 @@ static inline void kiwi_var_init(kiwi_var_t *var, char *name, int name_len)
 }
 
 static inline int kiwi_var_set(kiwi_var_t *var, kiwi_var_type_t type,
-			       char *value, int value_len)
+			       const char *value, int value_len)
 {
 	var->type = type;
 	if (value_len > (int)sizeof(var->value)) {
@@ -129,6 +134,8 @@ static inline void kiwi_vars_init(kiwi_vars_t *vars)
 	kiwi_var_init(&vars->vars[KIWI_VAR_SEARCH_PATH], "search_path", 12);
 	kiwi_var_init(&vars->vars[KIWI_VAR_STATEMENT_TIMEOUT],
 		      "statement_timeout", sizeof("statement_timeout"));
+	kiwi_var_init(&vars->vars[KIWI_VAR_WORK_MEM], "work_mem",
+		      sizeof("work_mem"));
 	kiwi_var_init(&vars->vars[KIWI_VAR_LOCK_TIMEOUT], "lock_timeout",
 		      sizeof("lock_timeout"));
 	kiwi_var_init(&vars->vars[KIWI_VAR_IDLE_IN_TRANSACTION_SESSION_TIMEOUT],
@@ -171,7 +178,7 @@ static inline void kiwi_vars_init(kiwi_vars_t *vars)
 }
 
 static inline int kiwi_vars_set(kiwi_vars_t *vars, kiwi_var_type_t type,
-				char *value, int value_len)
+				const char *value, int value_len)
 {
 	return kiwi_var_set(kiwi_vars_of(vars, type), type, value, value_len);
 }
@@ -267,50 +274,5 @@ static inline int kiwi_enquote(char *src, char *dst, int dst_len)
 	return (int)(pos - dst);
 }
 
-__attribute__((hot)) static inline int kiwi_vars_cas(kiwi_vars_t *client,
-						     kiwi_vars_t *server,
-						     char *query, int query_len)
-{
-	int pos = 0;
-	kiwi_var_type_t type;
-	type = KIWI_VAR_CLIENT_ENCODING;
-	for (; type < KIWI_VAR_MAX; type++) {
-		kiwi_var_t *var;
-		var = kiwi_vars_of(client, type);
-		/* we do not support odyssey-to-backend compression yet */
-		if (var->type == KIWI_VAR_UNDEF ||
-		    var->type == KIWI_VAR_COMPRESSION ||
-		    var->type ==
-			    KIWI_VAR_ODYSSEY_TARGET_SESSION_ATTRS /* never deploy this one */) {
-			continue;
-		}
-		kiwi_var_t *server_var;
-		server_var = kiwi_vars_of(server, type);
-		if (kiwi_var_compare(var, server_var)) {
-			continue;
-		}
-
-		/* SET key=quoted_value; */
-		int size = 4 + (var->name_len - 1) + 1 + 1;
-		if (query_len < size) {
-			return -1;
-		}
-		memcpy(query + pos, "SET ", 4);
-		pos += 4;
-		memcpy(query + pos, var->name, var->name_len - 1);
-		pos += var->name_len - 1;
-		memcpy(query + pos, "=", 1);
-		pos += 1;
-		int quote_len;
-		quote_len =
-			kiwi_enquote(var->value, query + pos, query_len - pos);
-		if (quote_len == -1) {
-			return -1;
-		}
-		pos += quote_len;
-		memcpy(query + pos, ";", 1);
-		pos += 1;
-	}
-
-	return pos;
-}
+int kiwi_vars_cas(kiwi_vars_t *client, kiwi_vars_t *server, char *query,
+		  int query_len, int smart_enquoting);

@@ -563,9 +563,17 @@ static inline int od_console_show_version(machine_msg_t *stream)
 	char data[128];
 	int data_len;
 	/* current version and build */
+#ifdef ODYSSEY_VERSION_GIT
+	data_len = od_snprintf(data, sizeof(data),
+			       "Odyssey %s (git %s) %s, compiled by %s",
+			       ODYSSEY_VERSION_NUMBER, ODYSSEY_VERSION_GIT,
+			       ODYSSEY_BUILD_TYPE, ODYSSEY_COMPILER_STRING);
+#else
 	data_len =
-		od_snprintf(data, sizeof(data), "%s-%s-%s", OD_VERSION_NUMBER,
-			    OD_VERSION_GIT, OD_VERSION_BUILD);
+		od_snprintf(data, sizeof(data), "Odyssey %s %s, compiled by %s",
+			    ODYSSEY_VERSION_NUMBER, ODYSSEY_BUILD_TYPE,
+			    ODYSSEY_COMPILER_STRING);
+#endif
 
 	int rc = kiwi_be_write_data_row_add(stream, offset, data, data_len);
 	if (rc != OK_RESPONSE) {
@@ -1251,11 +1259,11 @@ static inline int od_console_show_server_prep_stmt_cb(od_server_t *server,
 	od_hashmap_t *hm = server->prep_stmts;
 
 	for (size_t i = 0; i < hm->size; ++i) {
-		od_hashmap_bucket_t *bucket = hm->buckets[i];
+		od_hashmap_bucket_t *bucket = &hm->buckets[i];
 		pthread_mutex_lock(&bucket->mu);
 
 		od_list_t *i;
-		od_list_foreach(&(bucket->nodes->link), i)
+		od_list_foreach(&bucket->items, i)
 		{
 			int offset;
 			machine_msg_t *stream = argv[0];

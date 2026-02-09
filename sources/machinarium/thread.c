@@ -5,10 +5,8 @@
  * cooperative multitasking engine.
  */
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
 #include <pthread.h>
+#include <errno.h>
 
 #include <machinarium/machinarium.h>
 #include <machinarium/thread.h>
@@ -44,10 +42,36 @@ int mm_thread_join(mm_thread_t *thread)
 	return rc;
 }
 
-int mm_thread_set_name(mm_thread_t *thread, char *name)
+int mm_thread_join_nb(mm_thread_t *thread)
+{
+	/*
+	 * non-blocking version of thread joining
+	 * TODO: rewrite to smth without polling
+	 */
+
+	int rc;
+
+	while (1) {
+		rc = pthread_tryjoin_np(thread->id, NULL);
+		if (rc == 0) {
+			break;
+		}
+
+		if (rc == EBUSY) {
+			machine_sleep(100);
+			continue;
+		}
+
+		return rc;
+	}
+
+	return rc;
+}
+
+int mm_thread_set_name(char *name)
 {
 	int rc;
-	rc = pthread_setname_np(thread->id, name);
+	rc = pthread_setname_np(pthread_self(), name);
 	return rc;
 }
 

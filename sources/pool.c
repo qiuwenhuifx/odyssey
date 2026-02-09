@@ -10,7 +10,7 @@
 #include <pool.h>
 #include <od_memory.h>
 
-od_rule_pool_t *od_rule_pool_alloc()
+od_rule_pool_t *od_rule_pool_alloc(void)
 {
 	od_rule_pool_t *pool;
 	pool = od_malloc(sizeof(od_rule_pool_t));
@@ -25,6 +25,7 @@ od_rule_pool_t *od_rule_pool_alloc()
 	pool->discard_query = NULL;
 	pool->cancel = 1;
 	pool->rollback = 1;
+	pool->reserve_prepared_statement = 1;
 
 	return pool;
 }

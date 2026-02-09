@@ -32,8 +32,9 @@ for all Odyssey rules.
 | `workers`                                  | int              | `1`         | restart | Worker threads for clients                            |
 | `resolvers`                                | int              | `1`         | restart | DNS resolver threads                                  |
 | `readahead`                                | int (bytes)      | one page    | SIGHUP  | Per-connection read buffer                            |
-| `cache_coroutine`                          | int              | `0`         | restart | Coroutine cache size                                  |
+| `cache_coroutine`                          | int              | `256`       | restart | Coroutines cache size                                  |
 | `nodelay`                                  | int (bool)       | `yes`       | SIGHUP  | Enable TCP\_NODELAY                                   |
+| `disable_nolinger`                         | int (bool)       | `yes`       | SIGHUP  | Do no set tcp linger to 0 for client connections                  |
 | `keepalive`                                | int (sec)        | `15`        | SIGHUP  | TCP keepalive; 0 disables                             |
 | `keepalive_keep_interval`                  | int (sec)        | `5`         | SIGHUP  | Interval between probes                               |
 | `keepalive_probes`                         | int              | `3`         | SIGHUP  | Probes before killing conn                            |
@@ -48,10 +49,14 @@ for all Odyssey rules.
 | `graceful_shutdown_timeout_ms`             | int (ms)         | `30000`     | runtime | Graceful shutdown timeout                             |
 | `availability_zone`                        | string           | unset       | restart | Used for host selection                               |
 | `enable_online_restart`                    | int (bool)       | `yes`       | restart | Allow zero-downtime restart                           |
-| `online_restart_drop_options.drop_enabled` | int (bool)       | `yes`       | runtime | Drop old connections gradually                        |
+| `conn_drop_options.drop_enabled` | int (bool)       | `yes`       | restart | Drop old connections gradually                        |
+| `conn_drop_options.rate_per_sec` | int              | `1`       | restart | Max connections to drop per **interval_ms** on each worker          |
+| `conn_drop_options.interval_ms` | int              | `1000`       | restart | Interval for connections dropping in milliseconds         |
 | `bindwith_reuseport`                       | int (bool)       | `yes`        | restart | Use SO\_REUSEPORT for binding                         |
 | `max_sigterms_to_die`                      | int              | `3`         | SIGHUP  | Max SIGTERMs before hard exit                         |
 | `enable_host_watcher`                      | int(bool)        | `3`         | restart | Start host cpu and mem consumption watcher thread      |
+| `smart_search_path_enquoting`              | int(bool)        | `no`        | SIGHUP | Smart enquoting when `search_path` deploing to server connect      |
+
 
 
 ## **include**
@@ -162,9 +167,9 @@ Supported flags:
 
 `log_format "%p %t %e %l [%i %s] (%c) %m\n"`
 
-**JSON logging**: If `libcjson-dev` is installed during build, you can enable JSON-formatted logging by including the word `json` in the log_format value:
+**JSON logging**: You can enable JSON-formatted logging by setting log_format option to `json`:
 
-```
+```text
 log_format "json"
 ```
 
@@ -314,6 +319,13 @@ TCP nodelay. Set to 'yes', to enable nodelay.
 
 `nodelay yes`
 
+## **disable_nolinger**
+*yes|no*
+
+Disable setting tcp linger to 0 for new client connections.
+
+`disable_nolinger yes`
+
 ## **keepalive**
 *integer*
 
@@ -441,10 +453,10 @@ running new version (old one will automatically perform graceful shutdown)
 
 `enable_online_restart no`
 
-## **online_restart_drop_options**
+## **conn_drop_options** and **online_restart_drop_options**
 
 This section can be used to configure connections dropping during
-online restart
+online restart or graceful shutdown.
 
 ### **drop_enabled**
 *yes|no*
@@ -456,8 +468,40 @@ on old instance until it disconnect.
 Default: yes
 
 ```plain
-online_restart_drop_options {
+conn_drop_options {
 	drop_enabled no
+}
+```
+
+### **rate**
+*integer*
+
+Maximum amount of connections to drop per **interval_ms** on each worker.
+Negative value means infinite disabled.
+
+Default: 1
+
+```plain
+conn_drop_options {
+	drop_enabled no
+	rate 10
+}
+```
+*Note: each worker has an queue for rate limiting of size equals
+to that param, so do not use large numbers*
+
+### **interval_ms**
+*integer*
+
+Amount of millisecond for connection dropping rate.
+
+Default: 1000 (1 second)
+
+```plain
+conn_drop_options {
+	drop_enabled no
+	rate 10
+	interval_ms 3000
 }
 ```
 
@@ -480,4 +524,31 @@ Maximum SIGTERM count before hard exit(1)
 Start thread to watch host CPU and memory consumption. Makes `show host_utilization` works.
 
 `enable_host_watcher yes`
+
+## **smart_search_path_enquoting**
+*yes/no*
+
+Do not enquote `search_path` client startup option, if it seems correctly
+(does not contains special symbols, that allows to do harmful SQL injections).
+Allows to execute:
+```
+$ PGOPTIONS='--search_path=public,\ "$user",\ another' ./psql 'host=localhost port=6432 dbname=postgres user=rkhapov' -c 'show search_path'
+       search_path        
+--------------------------
+ public, "$user", another
+(1 row)
+```
+
+With disabled it will be (as for another parameters):
+```
+$ PGOPTIONS='--search_path=public,\ "$user",\ another' ./psql 'host=localhost port=6432 dbname=postgres user=rkhapov' -c 'show search_path'
+         search_path          
+------------------------------
+ "public, ""$user"", another"
+(1 row)
+```
+
+Default is `no`.
+
+`smart_search_path_enquoting yes`
 

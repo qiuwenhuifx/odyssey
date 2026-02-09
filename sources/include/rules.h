@@ -75,11 +75,26 @@ struct od_rule_key {
 static inline void od_rule_key_init(od_rule_key_t *rk)
 {
 	od_list_init(&rk->link);
+
+	rk->usr_name = NULL;
+	rk->db_name = NULL;
+	rk->address_range = od_address_range_create_default();
+	rk->conn_type = OD_RULE_CONN_TYPE_DEFAULT;
 }
 
 static inline void od_rule_key_free(od_rule_key_t *rk)
 {
 	od_list_unlink(&rk->link);
+
+	if (rk->db_name != NULL) {
+		od_free(rk->db_name);
+	}
+
+	if (rk->usr_name != NULL) {
+		od_free(rk->usr_name);
+	}
+
+	od_address_range_destroy(&rk->address_range);
 
 	od_free(rk);
 }
@@ -157,7 +172,6 @@ struct od_rule {
 
 	/* group */
 	od_group_t *group; /* set if rule is group */
-	od_rule_t *group_rule;
 	char **user_names;
 	int users_in_group;
 
@@ -187,6 +201,7 @@ struct od_rule {
 	od_list_t link;
 
 	int64_t group_checker_machine_id;
+	machine_wait_flag_t *group_checker_exit_flag;
 };
 
 struct od_rules {

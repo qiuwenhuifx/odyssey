@@ -43,12 +43,10 @@ static inline char *od_io_error(od_io_t *io)
 	return machine_error(io->io);
 }
 
-static inline int od_io_prepare(od_io_t *io, machine_io_t *io_obj,
-				int readahead)
+static inline int od_io_prepare(od_io_t *io, machine_io_t *io_obj)
 {
-	io->io = io_obj;
 	int rc;
-	rc = od_readahead_prepare(&io->readahead, readahead);
+	rc = od_readahead_prepare(&io->readahead);
 	if (rc == -1) {
 		return -1;
 	}
@@ -71,6 +69,9 @@ static inline int od_io_prepare(od_io_t *io, machine_io_t *io_obj,
 	if (io->on_write == NULL) {
 		return -1;
 	}
+
+	io->io = io_obj;
+
 	return 0;
 }
 
@@ -107,7 +108,11 @@ static inline int od_io_read_start(od_io_t *io)
 
 static inline int od_io_read_stop(od_io_t *io)
 {
-	return machine_read_stop(io->io);
+	if (io->io != NULL) {
+		return machine_read_stop(io->io);
+	}
+
+	return 0;
 }
 
 static inline int od_io_write_start(od_io_t *io)

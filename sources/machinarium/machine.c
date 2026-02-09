@@ -8,11 +8,17 @@
 #include <errno.h>
 #include <pthread.h>
 
+#include <machinarium/build.h>
+
 #include <machinarium/machinarium.h>
 #include <machinarium/machine.h>
 #include <machinarium/io.h>
 #include <machinarium/lrand48.h>
 #include <machinarium/mm.h>
+
+#ifdef HAVE_TSAN
+#include <sanitizer/tsan_interface.h>
+#endif
 
 __thread mm_machine_t *mm_self = NULL;
 
@@ -56,8 +62,19 @@ static void *machine_main(void *arg)
 
 	/* set thread name */
 	if (machine->name) {
-		mm_thread_set_name(&machine->thread, machine->name);
+		mm_thread_set_name(machine->name);
 	}
+#ifdef HAVE_TSAN
+	char name[256];
+	if (machine->name) {
+		snprintf(name, sizeof(name), "%s (in machine_main)",
+			 machine->name);
+	} else {
+		snprintf(name, sizeof(name),
+			 "Machine ID: %ld (in machine_main)", mm_self->id);
+	}
+	__tsan_set_fiber_name(__tsan_get_current_fiber(), name);
+#endif
 
 	mm_lrand48_seed();
 
@@ -158,7 +175,8 @@ MACHINE_API int64_t machine_create(char *name, machine_coroutine_t function,
 	return machine->id;
 }
 
-MACHINE_API int machine_wait(uint64_t machine_id)
+static inline int machine_wait_internal(uint64_t machine_id,
+					int (*awaiter)(mm_thread_t *))
 {
 	mm_machine_t *machine;
 	machine = mm_machinemgr_delete_by_id(&machinarium.machine_mgr,
@@ -167,13 +185,23 @@ MACHINE_API int machine_wait(uint64_t machine_id)
 		return -1;
 	}
 	int rc;
-	rc = mm_thread_join(&machine->thread);
+	rc = awaiter(&machine->thread);
 	if (machine->name) {
 		mm_free(machine->name);
 	}
 
 	mm_free(machine);
 	return rc;
+}
+
+MACHINE_API int machine_wait(uint64_t machine_id)
+{
+	return machine_wait_internal(machine_id, mm_thread_join);
+}
+
+int machine_wait_nb(uint64_t machine_id)
+{
+	return machine_wait_internal(machine_id, mm_thread_join_nb);
 }
 
 MACHINE_API int machine_stop(uint64_t machine_id)

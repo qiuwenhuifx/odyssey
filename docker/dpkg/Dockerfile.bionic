@@ -6,9 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Europe/Moskow
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-RUN apt-get update
-RUN apt purge --auto-remove cmake
-RUN apt-get install -y --no-install-recommends \
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
     git \
     libssl-dev \
     wget \
@@ -16,32 +14,22 @@ RUN apt-get install -y --no-install-recommends \
     openssl \
     libpam0g-dev \
     libldap2-dev libldap-2.4-2 \
-    libldap-common \
     build-essential \
     make \
-    locales tzdata \
-    file \
+    tzdata \
     software-properties-common \
-    icu-devtools libicu-dev \
-    pkgconf \
-    libreadline-dev \
-    bison flex \
-    libzstd-dev zlib1g-dev \
+    libsystemd-dev \
     debhelper debootstrap devscripts equivs
-
-RUN git clone -b REL_16_STABLE https://github.com/postgres/postgres.git
-RUN cd postgres && ./configure --prefix=/usr/lib/postgresql/16/ --libdir=/usr/lib/postgresql/16/lib/ --bindir=/usr/lib/postgresql/16/bin && make -j $(nproc) && make install
-ENV PATH="$PATH:/usr/lib/postgresql/16/bin"
 
 RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null
 RUN apt-add-repository "deb https://apt.kitware.com/ubuntu/ $(lsb_release -cs) main"
 RUN apt-get update && apt-get install -y --no-install-recommends cmake
 
+RUN apt-get install -y -t bionic-backports debhelper
+
 RUN apt-get clean autoclean; \
     apt-get autoremove --yes; \
     rm -rf /var/lib/{apt,dpkg,cache,log}/
-
-RUN apt-get install -y -t bionic-backports debhelper
 
 RUN dpkg-reconfigure --frontend noninteractive tzdata
 
@@ -50,6 +38,6 @@ FROM builder-env
 COPY . /odyssey
 WORKDIR /odyssey
 
-RUN dpkg-buildpackage -us -uc
+RUN BUILD_TYPE=build_relwithdbginfo dpkg-buildpackage -us -uc
 
 RUN /odyssey/docker/dpkg/copy-package-files.sh

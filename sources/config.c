@@ -39,7 +39,9 @@ void od_config_init(od_config_t *config)
 	config->locks_dir = NULL;
 	config->external_auth_socket_path = NULL;
 	config->enable_online_restart_feature = 1;
-	config->online_restart_drop_options.drop_enabled = 1;
+	config->conn_drop_options.drop_enabled = 1;
+	config->conn_drop_options.rate = 1;
+	config->conn_drop_options.interval_ms = 1000; /* 1 sec */
 	config->bindwith_reuseport = 1;
 	config->graceful_die_on_errors = 0;
 	config->unix_socket_mode = NULL;
@@ -50,6 +52,7 @@ void od_config_init(od_config_t *config)
 
 	config->readahead = sysconf(_SC_PAGESIZE);
 	config->nodelay = 1;
+	config->disable_nolinger = 0;
 
 	config->keepalive = 15;
 	config->keepalive_keep_interval = 5;
@@ -62,7 +65,7 @@ void od_config_init(od_config_t *config)
 	config->client_max = 0;
 	config->client_max_routing = 0;
 	config->server_login_retry = 1;
-	config->cache_coroutine = 0;
+	config->cache_coroutine = 256;
 	config->cache_msg_gc_size = 0;
 	config->coroutine_stack_size = 4;
 	config->hba_file = NULL;
@@ -84,6 +87,8 @@ void od_config_init(od_config_t *config)
 	config->soft_oom.drop.signal = SIGTERM;
 
 	config->host_watcher_enabled = 0;
+
+	config->smart_search_path_enquoting = 0;
 }
 
 void od_config_reload(od_config_t *current_config, od_config_t *new_config)
@@ -95,6 +100,11 @@ void od_config_reload(od_config_t *current_config, od_config_t *new_config)
 	current_config->server_login_retry = new_config->server_login_retry;
 	current_config->backend_connect_timeout_ms =
 		new_config->backend_connect_timeout_ms;
+	current_config->smart_search_path_enquoting =
+		new_config->smart_search_path_enquoting;
+	current_config->disable_nolinger = new_config->disable_nolinger;
+	current_config->graceful_shutdown_timeout_ms =
+		new_config->graceful_shutdown_timeout_ms;
 }
 
 static void od_config_listen_free(od_config_listen_t *);
@@ -389,9 +399,7 @@ void od_config_print(od_config_t *config, od_logger_t *logger)
 		       "soft_oom:         DISABLED");
 	}
 
-#ifdef POSTGRESQL_FOUND
 	od_log(logger, "config", NULL, NULL, "SCRAM auth method:       OK");
-#endif
 
 	od_log(logger, "config", NULL, NULL, "");
 	od_list_t *i;

@@ -7,6 +7,7 @@
 
 #include <odyssey.h>
 
+#include <unistd.h>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <netdb.h>
@@ -14,6 +15,7 @@
 #include <sys/stat.h>
 
 #include <machinarium/machinarium.h>
+#include <machinarium/machine.h>
 
 #include <system.h>
 #include <server.h>
@@ -35,6 +37,7 @@
 #include <tls.h>
 #include <memory.h>
 #include <od_error.h>
+#include <systemd_notify.h>
 #include <restart_sync.h>
 #include <debugprintf.h>
 
@@ -77,12 +80,18 @@ static inline void od_system_server(void *arg)
 		machine_io_t *client_io;
 		int rc;
 		rc = machine_accept(server->io, &client_io,
-				    server->config->backlog, 0, UINT32_MAX);
+				    server->config->backlog, 0,
+				    1000 /* 1 sec */);
 		if (rc == -1) {
+			int errno_ = machine_errno();
+			if (errno_ == ETIMEDOUT) {
+				/* just no new connections for last accept interval */
+				continue;
+			}
+
 			od_error(&instance->logger, "server", NULL, NULL,
 				 "accept failed: %s",
 				 machine_error(server->io));
-			int errno_ = machine_errno();
 			if (errno_ == EADDRINUSE) {
 				break;
 			}
@@ -97,6 +106,10 @@ static inline void od_system_server(void *arg)
 				instance->config.keepalive_keep_interval,
 				instance->config.keepalive_probes,
 				instance->config.keepalive_usr_timeout);
+		}
+
+		if (!instance->config.disable_nolinger) {
+			machine_set_nolinger(client_io);
 		}
 
 		/* allocate new client */
@@ -114,11 +127,12 @@ static inline void od_system_server(void *arg)
 					 client->id.id_prefix,
 					 (signed)sizeof(client->id.id),
 					 client->id.id, &client->relay);
-		rc = od_io_prepare(&client->io, client_io,
-				   instance->config.readahead);
+		rc = od_io_prepare(&client->io, client_io);
 		if (rc == -1) {
-			od_error(&instance->logger, "server", NULL, NULL,
-				 "failed to allocate client io object");
+			od_error(
+				&instance->logger, "server", NULL, NULL,
+				"failed to allocate client io object, errno = %d (%s)",
+				machine_errno(), strerror(machine_errno()));
 			machine_close(client_io);
 			machine_io_free(client_io);
 			od_client_free(client);
@@ -152,6 +166,16 @@ static inline void od_system_server(void *arg)
 			machine_sleep(1);
 		}
 	}
+
+	if (!server->config->host) {
+		/* remove unix socket files */
+		static OD_THREAD_LOCAL char path[PATH_MAX];
+		od_snprintf(path, sizeof(path), "%s/.s.PGSQL.%d",
+			    instance->config.unix_socket_dir,
+			    server->config->port);
+		od_glog("server", NULL, NULL, "remove file %s", path);
+		unlink(path);
+	}
 }
 
 od_system_server_t *od_system_server_init(void)
@@ -168,6 +192,7 @@ od_system_server_t *od_system_server_init(void)
 	od_id_generate(&server->sid, "sid");
 	atomic_init(&server->closed, false);
 	server->pre_exited = false;
+	server->coro_id = -1;
 
 	return server;
 }
@@ -299,6 +324,8 @@ static inline od_retcode_t od_system_server_start(od_system_t *system,
 		goto error;
 	}
 
+	server->coro_id = coroutine_id;
+
 	/* register server in list for possible TLS reload */
 	od_router_t *router = system->global->router;
 	od_list_append(&router->servers, &server->link);
@@ -371,8 +398,10 @@ static inline int od_system_listen(od_system_t *system)
 			if (rc == 0) {
 				binded++;
 			}
+			freeaddrinfo(ai);
 			continue;
 		}
+		struct addrinfo *orig = ai;
 		while (ai) {
 			rc = od_system_server_start(system, listen, ai);
 			if (rc == 0) {
@@ -380,12 +409,19 @@ static inline int od_system_listen(od_system_t *system)
 			}
 			ai = ai->ai_next;
 		}
+		freeaddrinfo(orig);
 	}
 
+#ifdef ODYSSEY_VERSION_GIT
 	od_setproctitlef(
-		&instance->orig_argv_ptr,
-		"odyssey: version %s listening and accepting new connections ",
-		OD_VERSION_NUMBER);
+		&instance->orig_argv_ptr, instance->orig_argv_ptr_len,
+		"odyssey %s (git %s) listening and accepting new connections ",
+		ODYSSEY_VERSION_NUMBER, ODYSSEY_VERSION_GIT);
+#else
+	od_setproctitlef(&instance->orig_argv_ptr, instance->orig_argv_ptr_len,
+			 "odyssey %s listening and accepting new connections ",
+			 ODYSSEY_VERSION_NUMBER);
+#endif
 
 	return binded;
 }
@@ -609,6 +645,8 @@ static inline void od_system(void *arg)
 		return;
 	}
 
+	system->sighandler_machine = mid;
+
 	/* start listen servers */
 	rc = od_system_listen(system);
 	if (rc == 0) {
@@ -616,14 +654,35 @@ static inline void od_system(void *arg)
 			 "failed to bind any listen address");
 		exit(1);
 	}
+
 	od_rules_storages_watchdogs_run(&instance->logger, &router->rules);
 
 	od_rules_groups_checkers_run(&instance->logger, &router->rules);
+
+	machine_wait_nb(system->sighandler_machine);
+
+	od_list_t *i, *n;
+	od_list_foreach_safe(&router->servers, i, n)
+	{
+		od_system_server_t *server;
+		server = od_container_of(i, od_system_server_t, link);
+		machine_join(server->coro_id);
+	}
+
+	od_router_free(router);
+
+	od_logger_shutdown(&instance->logger);
+	od_logger_wait_finish(&instance->logger);
+
+	od_instance_free(instance);
+	od_global_destroy(od_global_get());
+	od_system_free(system);
 }
 
 void od_system_init(od_system_t *system)
 {
 	system->machine = -1;
+	system->sighandler_machine = -1;
 	system->global = NULL;
 }
 
@@ -640,7 +699,7 @@ int od_system_start(od_system_t *system, od_global_t *global)
 	return 0;
 }
 
-od_system_t *od_system_create()
+od_system_t *od_system_create(void)
 {
 	od_system_t *s = od_malloc(sizeof(od_system_t));
 	if (s == NULL) {

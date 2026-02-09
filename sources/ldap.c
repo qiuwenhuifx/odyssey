@@ -34,6 +34,10 @@ static inline od_retcode_t od_ldap_error_report_client(od_client_t *cl, int rc)
 		return OK_RESPONSE;
 	}
 
+	od_gerror("auth", cl, NULL,
+		  "ldap authentication failed for user \"%s\": %s (%d)",
+		  cl->startup.user.value, ldap_err2string(rc), rc);
+
 	od_frontend_fatal(cl, KIWI_SYSTEM_ERROR,
 			  "ldap authentication failed for user \"%s\": %s (%d)",
 			  cl->startup.user.value, ldap_err2string(rc), rc);
@@ -264,7 +268,7 @@ od_retcode_t od_ldap_server_prepare(od_logger_t *logger, od_ldap_server_t *serv,
 	return OK_RESPONSE;
 }
 
-od_ldap_server_t *od_ldap_server_allocate()
+od_ldap_server_t *od_ldap_server_allocate(void)
 {
 	od_ldap_server_t *serv = od_malloc(sizeof(od_ldap_server_t));
 	serv->conn = NULL;
@@ -569,9 +573,6 @@ od_retcode_t od_auth_ldap(od_client_t *cl, kiwi_password_t *tok)
 	}
 
 	od_ldap_endpoint_unlock(cl->rule->ldap_endpoint);
-	if (rc == OK_RESPONSE) {
-		return rc;
-	}
 
 	return rc;
 }
@@ -588,7 +589,7 @@ od_retcode_t od_ldap_conn_close(od_attribute_unused() od_route_t *route,
 /*---------------------------------------------------------------------------------------- */
 
 /* ldap endpoints ADD/REMOVE API */
-od_ldap_endpoint_t *od_ldap_endpoint_alloc()
+od_ldap_endpoint_t *od_ldap_endpoint_alloc(void)
 {
 	od_ldap_endpoint_t *le = od_malloc(sizeof(od_ldap_endpoint_t));
 	if (le == NULL) {
@@ -631,12 +632,25 @@ od_ldap_endpoint_t *od_ldap_endpoint_alloc()
 		return NULL;
 	}
 
+	atomic_store(&le->refs, 1);
+
 	pthread_mutex_init(&le->lock, NULL);
+	return le;
+}
+
+od_ldap_endpoint_t *od_ldap_endpoint_ref(od_ldap_endpoint_t *le)
+{
+	atomic_fetch_add(&le->refs, 1);
+
 	return le;
 }
 
 od_retcode_t od_ldap_endpoint_free(od_ldap_endpoint_t *le)
 {
+	if (atomic_fetch_sub(&le->refs, 1) > 1) {
+		return OK_RESPONSE;
+	}
+
 	if (le->name) {
 		od_free(le->name);
 	}
@@ -669,6 +683,9 @@ od_retcode_t od_ldap_endpoint_free(od_ldap_endpoint_t *le)
 	if (le->ldapbasedn) {
 		od_free(le->ldapbasedn);
 	}
+	if (le->ldapbinddn) {
+		od_free(le->ldapbinddn);
+	}
 	/* preparsed connect url */
 	if (le->ldapurl) {
 		od_free(le->ldapurl);
@@ -695,7 +712,7 @@ od_retcode_t od_ldap_endpoint_free(od_ldap_endpoint_t *le)
 	return OK_RESPONSE;
 }
 
-od_ldap_storage_credentials_t *od_ldap_storage_credentials_alloc()
+od_ldap_storage_credentials_t *od_ldap_storage_credentials_alloc(void)
 {
 	od_ldap_storage_credentials_t *lsc =
 		od_malloc(sizeof(od_ldap_storage_credentials_t));
@@ -709,12 +726,26 @@ od_ldap_storage_credentials_t *od_ldap_storage_credentials_alloc()
 	lsc->lsc_username = NULL;
 	lsc->lsc_password = NULL;
 
+	atomic_store(&lsc->refs, 1);
+
+	return lsc;
+}
+
+od_ldap_storage_credentials_t *
+od_ldap_storage_credentials_ref(od_ldap_storage_credentials_t *lsc)
+{
+	atomic_fetch_add(&lsc->refs, 1);
+
 	return lsc;
 }
 
 od_retcode_t
 od_ldap_storage_credentials_free(od_ldap_storage_credentials_t *lsc)
 {
+	if (atomic_fetch_sub(&lsc->refs, 1) > 1) {
+		return OK_RESPONSE;
+	}
+
 	if (lsc->name) {
 		od_free(lsc->name);
 	}

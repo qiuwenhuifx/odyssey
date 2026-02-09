@@ -11,7 +11,6 @@
 int mm_socket(int, int, int);
 int mm_socket_eventfd(unsigned int);
 int mm_socket_set_nonblock(int, int);
-int mm_socket_set_cloexec(int fd, int enable);
 int mm_socket_set_nodelay(int, int);
 int mm_socket_set_keepalive(int fd, int enable, int delay, int interval,
 			    int keep_count, int usr_timeout);
@@ -20,6 +19,7 @@ int mm_socket_advice_keepalive_usr_timeout(int delay, int interval,
 int mm_socket_set_nosigpipe(int, int);
 int mm_socket_set_reuseaddr(int, int);
 int mm_socket_set_reuseport(int, int);
+int mm_socket_set_nolinger(int fd);
 int mm_socket_set_ipv6only(int, int);
 int mm_socket_error(int);
 int mm_socket_connect(int, struct sockaddr *);

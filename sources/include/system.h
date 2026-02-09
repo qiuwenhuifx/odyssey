@@ -23,6 +23,8 @@ struct od_system_server {
 
 	atomic_bool closed;
 	volatile bool pre_exited;
+
+	int64_t coro_id;
 };
 
 void od_system_server_free(od_system_server_t *server);
@@ -30,10 +32,11 @@ od_system_server_t *od_system_server_init(void);
 
 struct od_system {
 	int64_t machine;
+	int64_t sighandler_machine;
 	od_global_t *global;
 };
 
-od_system_t *od_system_create();
+od_system_t *od_system_create(void);
 void od_system_init(od_system_t *);
 int od_system_start(od_system_t *, od_global_t *);
 void od_system_config_reload(od_system_t *);

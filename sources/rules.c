@@ -66,6 +66,16 @@ void od_rules_free(od_rules_t *rules)
 
 	pthread_mutex_destroy(&rules->mu);
 	od_list_t *i, *n;
+
+#ifdef LDAP_FOUND
+	od_list_foreach_safe(&rules->ldap_endpoints, i, n)
+	{
+		od_ldap_endpoint_t *ldap_endp;
+		ldap_endp = od_container_of(i, od_ldap_endpoint_t, link);
+		od_ldap_endpoint_free(ldap_endp);
+	}
+#endif
+
 	od_list_foreach_safe(&rules->rules, i, n)
 	{
 		od_rule_t *rule;
@@ -88,6 +98,7 @@ od_ldap_storage_credentials_t *
 od_rule_ldap_storage_credentials_add(od_rule_t *rule,
 				     od_ldap_storage_credentials_t *lsc)
 {
+	od_ldap_storage_credentials_ref(lsc);
 	od_list_append(&rule->ldap_storage_creds_list, &lsc->link);
 	return lsc;
 }
@@ -199,8 +210,9 @@ void od_rules_group_checker_run(void *arg)
 	od_instance_t *instance = global->instance;
 
 	group->online = 1;
-	od_debug(&instance->logger, "group_checker", NULL, NULL,
-		 "start group checking");
+	od_log(&instance->logger, "group_checker", NULL, NULL,
+	       "start group checking for %s.%s", group_rule->db_name,
+	       group_rule->user_name);
 
 	/* create internal auth client */
 	od_client_t *group_checker_client;
@@ -247,10 +259,17 @@ void od_rules_group_checker_run(void *arg)
 	while (1) {
 		rc = machine_wait_flag_wait(
 			done_flag, instance->config.group_checker_interval);
-		if (rc != -1 && machine_errno() != ETIMEDOUT) {
+		if (rc == 0) {
 			od_log(&instance->logger, "group_checker", NULL, NULL,
 			       "done flag is set, exiting from rule group checker for %s.%s",
 			       group_rule->db_name, group_rule->user_name);
+			break;
+		}
+
+		if (rc == -1 && machine_errno() != ETIMEDOUT) {
+			od_error(&instance->logger, "group_checker", NULL, NULL,
+				 "can't wait done flag: %s (%d)",
+				 strerror(machine_errno()), machine_errno());
 			break;
 		}
 
@@ -259,8 +278,6 @@ void od_rules_group_checker_run(void *arg)
 		rc = od_attach_extended(instance, "group_checker", router,
 					group_checker_client);
 		if (rc != OK_RESPONSE) {
-			/* 1 second soft interval */
-			machine_sleep(1000);
 			continue;
 		}
 
@@ -453,6 +470,22 @@ void od_rules_group_checker_run(void *arg)
 	od_client_free_extended(group_checker_client);
 	od_group_free(group);
 
+	char **t_names;
+	int t_count;
+	od_router_lock(router);
+	t_names = group_rule->user_names;
+	t_count = group_rule->users_in_group;
+	group_rule->user_names = NULL;
+	group_rule->users_in_group = 0;
+	od_router_unlock(router);
+	for (int i = 0; i < t_count; i++) {
+		od_free(t_names[i]);
+	}
+	od_free(t_names);
+	od_router_unlock(router);
+
+	machine_wait_flag_set(group_rule->group_checker_exit_flag);
+
 	od_free(args);
 }
 
@@ -469,6 +502,15 @@ od_retcode_t od_rules_groups_checkers_run(od_logger_t *logger,
 				od_malloc(sizeof(od_group_checker_run_args));
 			args->rule = rule;
 			args->done_flag = rules->destroy_flag;
+
+			rule->group_checker_exit_flag =
+				machine_wait_flag_create();
+			if (rule->group_checker_exit_flag == NULL) {
+				od_error(
+					logger, "system", NULL, NULL,
+					"failed to start group_checker coroutine: can't create wait flag");
+				return NOT_OK_RESPONSE;
+			}
 
 			rule->group_checker_machine_id =
 				machine_coroutine_create(
@@ -495,6 +537,7 @@ static od_rule_t *od_rules_add(od_rules_t *rules)
 	}
 	memset(rule, 0, sizeof(*rule));
 	rule->group_checker_machine_id = -1;
+	rule->group_checker_exit_flag = NULL;
 	/* pool */
 	rule->pool = od_rule_pool_alloc();
 	if (rule->pool == NULL) {
@@ -593,15 +636,6 @@ error:
 
 void od_rules_rule_free(od_rule_t *rule)
 {
-	if (rule->db_name) {
-		od_free(rule->db_name);
-	}
-	if (rule->user_name) {
-		od_free(rule->user_name);
-	}
-	if (rule->address_range.string_value) {
-		od_free(rule->address_range.string_value);
-	}
 	if (rule->password) {
 		od_free(rule->password);
 	}
@@ -634,9 +668,6 @@ void od_rules_rule_free(od_rule_t *rule)
 	}
 	if (rule->pool) {
 		od_rule_pool_free(rule->pool);
-	}
-	if (rule->group) {
-		rule->group->online = 0;
 	}
 	if (rule->mdb_iamproxy_socket_path) {
 		od_free(rule->mdb_iamproxy_socket_path);
@@ -680,7 +711,23 @@ void od_rules_rule_free(od_rule_t *rule)
 	}
 
 	if (rule->group_checker_machine_id != -1) {
-		machine_join(rule->group_checker_machine_id);
+		machine_wait_flag_wait(rule->group_checker_exit_flag,
+				       UINT32_MAX);
+		machine_wait_flag_destroy(rule->group_checker_exit_flag);
+	}
+
+	/*
+	 * group checker uses db_name and user_name
+	 * so free them at a last
+	 */
+	if (rule->db_name) {
+		od_free(rule->db_name);
+	}
+	if (rule->user_name) {
+		od_free(rule->user_name);
+	}
+	if (rule->address_range.string_value) {
+		od_free(rule->address_range.string_value);
 	}
 
 	od_list_unlink(&rule->link);
@@ -1675,19 +1722,20 @@ int od_pool_validate(od_logger_t *logger, od_rule_pool_t *pool, char *db_name,
 	/* reserve prepare statement feature */
 	if (pool->reserve_prepared_statement &&
 	    pool->pool_type == OD_RULE_POOL_SESSION) {
-		od_error(
-			logger, "rules", NULL, NULL,
-			"rule '%s.%s %s': prepared statements support in session pool makes no sense",
-			db_name, user_name, address_range->string_value);
-		return NOT_OK_RESPONSE;
+		pool->reserve_prepared_statement = 0;
+
+		od_log(logger, "rules", NULL, NULL,
+		       "rule '%s.%s %s': disable prepared statements reserving due to session pooling",
+		       db_name, user_name, address_range->string_value);
 	}
 
 	if (pool->reserve_prepared_statement && pool->discard) {
-		od_error(
-			logger, "rules", NULL, NULL,
-			"rule '%s.%s %s': pool discard is forbidden when using prepared statements support",
-			db_name, user_name, address_range->string_value);
-		return NOT_OK_RESPONSE;
+		pool->discard = 0;
+		pool->smart_discard = 1;
+
+		od_log(logger, "rules", NULL, NULL,
+		       "rule '%s.%s %s': replace pool_discard with pool_smart_discard due to prepared statements reserving",
+		       db_name, user_name, address_range->string_value);
 	}
 
 	if (pool->smart_discard && !pool->reserve_prepared_statement) {
@@ -2177,9 +2225,8 @@ int od_rules_cleanup(od_rules_t *rules)
 		storage = od_container_of(i, od_ldap_endpoint_t, link);
 		od_ldap_endpoint_free(endp);
 	}
-	*/
 
-	od_list_init(&rules->ldap_endpoints);
+	od_list_init(&rules->ldap_endpoints);*/
 #endif
 
 	return 0;
@@ -2465,12 +2512,14 @@ void od_rules_print(od_rules_t *rules, od_logger_t *logger)
 bool od_name_in_rule(const od_rule_t *rule, const char *name)
 {
 	if (rule->group) {
-		bool matched = strcmp(rule->user_name, name) == 0;
 		for (int i = 0; i < rule->users_in_group; i++) {
-			matched |= (strcmp(rule->user_names[i], name) == 0);
+			if (strcmp(rule->user_names[i], name) == 0) {
+				return true;
+			}
 		}
-		return matched;
-	} else {
-		return strcmp(rule->user_name, name) == 0;
+
+		return false;
 	}
+
+	return strcmp(rule->user_name, name) == 0;
 }
